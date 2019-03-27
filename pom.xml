@@ -42,6 +42,11 @@
         <url>https://travis-ci.org/3redronin/murp</url>
     </ciManagement>
 
+    <scm>
+        <url>https://github.com/3redronin/murp</url>
+        <connection>scm:git:git@github.com:3redronin/murp.git</connection>
+    </scm>
+
     <dependencies>
         <dependency>
             <groupId>org.slf4j</groupId>
