@@ -13,7 +13,7 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <jetty.client.version>9.4.11.v20180605</jetty.client.version>
+        <jetty.client.version>9.4.15.v20190215</jetty.client.version>
     </properties>
 
     <inceptionYear>2019</inceptionYear>
