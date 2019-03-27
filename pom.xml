@@ -8,6 +8,7 @@
     <artifactId>murp</artifactId>
     <version>0.1-SNAPSHOT</version>
     <url>https://github.com/3redronin/murp</url>
+    <name>murp</name>
     <description>A reverse proxy handler for Mu Server</description>
 
     <properties>
