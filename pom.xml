@@ -37,6 +37,11 @@
         </developer>
     </developers>
 
+    <ciManagement>
+        <system>travis-ci</system>
+        <url>https://travis-ci.org/3redronin/murp</url>
+    </ciManagement>
+
     <dependencies>
         <dependency>
             <groupId>org.slf4j</groupId>
