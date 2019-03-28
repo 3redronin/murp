@@ -12,6 +12,8 @@ import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -33,7 +35,7 @@ public class ReverseProxyTest {
     @Test
     public void itCanProxyEverythingToATargetDomain() throws Exception {
 
-        MuServer targetServer = httpsServer()
+        MuServer targetServer = httpServer()
             .addHandler(Method.POST, "/some-text",
                 (request, response, pathParams) -> {
                     response.status(201);
@@ -43,10 +45,13 @@ public class ReverseProxyTest {
                 })
             .start();
 
+        List<String> notifications = new ArrayList<>();
 
         MuServer reverseProxyServer = httpsServer()
             .addHandler(reverseProxy()
                 .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                .addProxyCompleteListener((clientRequest, clientResponse, target, durationMillis)
+                    -> notifications.add("Did " + clientRequest.method() + " " + clientRequest.uri().getPath() + " and returned a " + clientResponse.status() + " from " + target))
             )
             .start();
 
@@ -67,6 +72,7 @@ public class ReverseProxyTest {
         assertThat(headers.get("Via"), is("HTTP/1.1 private"));
         assertThat(headers.get("Forwarded"), is(nullValue()));
         assertThat(someText.getContentAsString(), is("Hello: " + requestBody));
+        assertThat(notifications, contains("Did POST /some-text and returned a 201 from " + targetServer.uri().resolve("/some-text")));
     }
 
     @Test

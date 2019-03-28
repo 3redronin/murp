@@ -6,7 +6,11 @@ import io.muserver.Mutils;
 import org.eclipse.jetty.client.HttpClient;
 
 import java.net.URI;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
+
+import static java.util.Collections.emptyList;
 
 /**
  * A builder for creating a reverse proxy, which is a {@link MuHandler} that can be added to a Mu Server.
@@ -19,6 +23,7 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
     private boolean sendLegacyForwardedHeaders;
     private boolean discardClientForwardedHeaders;
     private long totalTimeoutInMillis = TimeUnit.MINUTES.toMillis(5);
+    private List<ProxyCompleteListener> proxyCompleteListeners;
 
     /**
      * The name to add as the <code>Via</code> header, which defaults to <code>private</code>.
@@ -98,6 +103,19 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
     }
 
     /**
+     * Registers a proxy completion listener.
+     * @param proxyCompleteListener A listener to be called when a proxy request is complete
+     * @return This builder
+     */
+    public ReverseProxyBuilder addProxyCompleteListener(ProxyCompleteListener proxyCompleteListener) {
+        if (proxyCompleteListeners == null) {
+            proxyCompleteListeners = new ArrayList<>(1);
+        }
+        proxyCompleteListeners.add(proxyCompleteListener);
+        return this;
+    }
+
+    /**
      * Creates and returns a new instance of a reverse proxy builder.
      * @return A builder
      */
@@ -119,6 +137,10 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
         if (client == null) {
             client = HttpClientBuilder.httpClient().build();
         }
-        return new ReverseProxy(client, uriMapper, totalTimeoutInMillis, viaName, discardClientForwardedHeaders, sendLegacyForwardedHeaders);
+        List<ProxyCompleteListener> proxyCompleteListeners = this.proxyCompleteListeners;
+        if (proxyCompleteListeners == null) {
+            proxyCompleteListeners = emptyList();
+        }
+        return new ReverseProxy(client, uriMapper, totalTimeoutInMillis, proxyCompleteListeners, viaName, discardClientForwardedHeaders, sendLegacyForwardedHeaders);
     }
 }

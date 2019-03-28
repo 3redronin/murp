@@ -22,8 +22,13 @@ import static java.util.Arrays.asList;
 
 public class ReverseProxy implements MuHandler {
     private static final Logger log = LoggerFactory.getLogger(ReverseProxy.class);
-    private static final Set<String> HOP_BY_HOP_HEADERS = Collections.unmodifiableSet(new HashSet<>(asList(
+
+    /**
+     * An unmodifiable set of the Hop By Hop headers. All are in lowercase.
+     */
+    public static final Set<String> HOP_BY_HOP_HEADERS = Collections.unmodifiableSet(new HashSet<>(asList(
         "keep-alive", "transfer-encoding", "te", "connection", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate")));
+
     private static final Set<String> FORWARDED_HEADERS = Collections.unmodifiableSet(new HashSet<>(asList(
         "forwarded", "x-forwarded-by", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port", "x-forwarded-server"
     )));
@@ -32,6 +37,7 @@ public class ReverseProxy implements MuHandler {
     private final HttpClient httpClient;
     private final UriMapper uriMapper;
     private final long totalTimeoutInMillis;
+    private final List<ProxyCompleteListener> proxyCompleteListeners;
 
     private static final String ipAddress;
 
@@ -50,10 +56,11 @@ public class ReverseProxy implements MuHandler {
     private final boolean discardClientForwardedHeaders;
     private final boolean sendLegacyForwardedHeaders;
 
-    ReverseProxy(HttpClient httpClient, UriMapper uriMapper, long totalTimeoutInMillis, String viaName, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders) {
+    ReverseProxy(HttpClient httpClient, UriMapper uriMapper, long totalTimeoutInMillis, List<ProxyCompleteListener> proxyCompleteListeners, String viaName, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders) {
         this.httpClient = httpClient;
         this.uriMapper = uriMapper;
         this.totalTimeoutInMillis = totalTimeoutInMillis;
+        this.proxyCompleteListeners = proxyCompleteListeners;
         this.viaValue = "HTTP/1.1 " + viaName;
         this.discardClientForwardedHeaders = discardClientForwardedHeaders;
         this.sendLegacyForwardedHeaders = sendLegacyForwardedHeaders;
@@ -76,7 +83,7 @@ public class ReverseProxy implements MuHandler {
 
         Request targetReq = httpClient.newRequest(target);
         targetReq.method(clientReq.method().name());
-        boolean hasRequestBody = setRequestHeaders(clientReq, targetReq);
+        boolean hasRequestBody = setRequestHeaders(clientReq, targetReq, discardClientForwardedHeaders, sendLegacyForwardedHeaders, viaValue);
 
         if (hasRequestBody) {
             DeferredContentProvider targetReqBody = new DeferredContentProvider();
@@ -127,8 +134,8 @@ public class ReverseProxy implements MuHandler {
             }));
         targetReq.timeout(totalTimeoutInMillis, TimeUnit.MILLISECONDS);
         targetReq.send(result -> {
+            long duration = System.currentTimeMillis() - start;
             try {
-                long duration = System.currentTimeMillis() - start;
                 if (result.isFailed()) {
                     String errorID = UUID.randomUUID().toString();
                     log.error("Failed to proxy response. ErrorID=" + errorID + " for " + result, result.getFailure());
@@ -147,14 +154,32 @@ public class ReverseProxy implements MuHandler {
                 }
             } finally {
                 asyncHandle.complete();
+                for (ProxyCompleteListener proxyCompleteListener : proxyCompleteListeners) {
+                    try {
+                        proxyCompleteListener.onComplete(clientReq, clientResp, target, duration);
+                    } catch (Exception e) {
+                        log.warn(proxyCompleteListener + " threw an error while processing onComplete", e);
+                    }
+                }
             }
         });
 
         return true;
     }
 
-    private boolean setRequestHeaders(MuRequest clientReq, Request targetReq) {
-        Headers reqHeaders = clientReq.headers();
+    /**
+     * Copies headers from the clientRequest to the targetRequest, removing any Hop-By-Hop headers and adding Forwarded headers.
+     * @param clientRequest The original Mu request to copy headers from.
+     * @param targetRequest A Jetty request to copy the headers to.
+     * @param discardClientForwardedHeaders Set true to ignore Forwarded headers from the client request
+     * @param sendLegacyForwardedHeaders Set true to send X-Forwarded-* headers along with Forwarded headers
+     * @param viaValue The value to set on the Via header, for example <code>HTTP/1.1 myserver</code>
+     * @return Returns true if the client request has a body; otherwise false.
+     */
+    public static boolean setRequestHeaders(MuRequest clientRequest, Request targetRequest, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders, String viaValue) {
+        Mutils.notNull("clientRequest", clientRequest);
+        Mutils.notNull("targetRequest", targetRequest);
+        Headers reqHeaders = clientRequest.headers();
         List<String> customHopByHop = getCustomHopByHopHeaders(reqHeaders.get(HeaderNames.CONNECTION));
 
         boolean hasContentLengthOrTransferEncoding = false;
@@ -165,38 +190,66 @@ public class ReverseProxy implements MuHandler {
                 continue;
             }
             hasContentLengthOrTransferEncoding |= lowKey.equals("content-length") || lowKey.equals("transfer-encoding");
-            targetReq.header(key, clientHeader.getValue());
+            targetRequest.header(key, clientHeader.getValue());
         }
 
-        targetReq.header(HttpHeader.VIA, viaValue);
+        targetRequest.header(HttpHeader.VIA, viaValue);
 
-        List<ForwardedHeader> forwardHeaders;
-        if (discardClientForwardedHeaders) {
-            forwardHeaders = Collections.emptyList();
-        } else {
-            forwardHeaders = clientReq.headers().forwarded();
-            for (ForwardedHeader existing : forwardHeaders) {
-                targetReq.header(HttpHeader.FORWARDED, existing.toString());
-            }
-        }
-
-        ForwardedHeader newForwarded = createFowardedHeader(clientReq);
-        targetReq.header(HttpHeader.FORWARDED, newForwarded.toString());
-
-        if (sendLegacyForwardedHeaders) {
-            ForwardedHeader first = forwardHeaders.isEmpty() ? newForwarded : forwardHeaders.get(0);
-            targetReq.header(HttpHeader.X_FORWARDED_PROTO, first.proto());
-            targetReq.header(HttpHeader.X_FORWARDED_HOST, first.host());
-            targetReq.header(HttpHeader.X_FORWARDED_FOR, first.forValue());
-        }
+        setForwardedHeaders(clientRequest, targetRequest, discardClientForwardedHeaders, sendLegacyForwardedHeaders);
 
         return hasContentLengthOrTransferEncoding;
     }
 
-    private static ForwardedHeader createFowardedHeader(MuRequest clientReq) {
-        String forwardedFor = clientReq.remoteAddress();
-        String proto = clientReq.serverURI().getScheme();
-        String host = clientReq.headers().get(HeaderNames.HOST);
+    /**
+     * Sets Forwarded and optionally X-Forwarded-* headers to the target request, based on the client request
+     * @param clientRequest the received client request
+     * @param targetRequest the target request to write the headers to
+     * @param discardClientForwardedHeaders if <code>true</code> then existing Forwarded headers on the client request will be discarded (normally false, unless you do not trust the upstream system)
+     * @param sendLegacyForwardedHeaders if <code>true</code> then X-Forwarded-Proto/Host/For headers will also be added
+     */
+    public static void setForwardedHeaders(MuRequest clientRequest, Request targetRequest, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders) {
+        Mutils.notNull("clientRequest", clientRequest);
+        Mutils.notNull("targetRequest", targetRequest);
+        List<ForwardedHeader> forwardHeaders;
+        if (discardClientForwardedHeaders) {
+            forwardHeaders = Collections.emptyList();
+        } else {
+            forwardHeaders = clientRequest.headers().forwarded();
+            for (ForwardedHeader existing : forwardHeaders) {
+                targetRequest.header(HttpHeader.FORWARDED, existing.toString());
+            }
+        }
+
+        ForwardedHeader newForwarded = createForwardedHeader(clientRequest);
+        targetRequest.header(HttpHeader.FORWARDED, newForwarded.toString());
+
+        if (sendLegacyForwardedHeaders) {
+            ForwardedHeader first = forwardHeaders.isEmpty() ? newForwarded : forwardHeaders.get(0);
+            setXForwardedHeaders(targetRequest, first);
+        }
+    }
+
+    /**
+     * Sets X-Forwarded-Proto, X-Forwarded-Host and X-Forwarded-For on the request given the forwarded header.
+     * @param targetRequest The request to add the headers to
+     * @param forwardedHeader The forwarded header that has the original client information on it.
+     */
+    private static void setXForwardedHeaders(Request targetRequest, ForwardedHeader forwardedHeader) {
+        targetRequest.header(HttpHeader.X_FORWARDED_PROTO, forwardedHeader.proto());
+        targetRequest.header(HttpHeader.X_FORWARDED_HOST, forwardedHeader.host());
+        targetRequest.header(HttpHeader.X_FORWARDED_FOR, forwardedHeader.forValue());
+    }
+
+    /**
+     * Creates a Forwarded header for the based on the current request which can be used when
+     * proxying the request to a target.
+     * @param clientRequest The request from the client
+     * @return A ForwardedHeader that can be added to a new request
+     */
+    private static ForwardedHeader createForwardedHeader(MuRequest clientRequest) {
+        String forwardedFor = clientRequest.remoteAddress();
+        String proto = clientRequest.serverURI().getScheme();
+        String host = clientRequest.headers().get(HeaderNames.HOST);
         return new ForwardedHeader(ipAddress, forwardedFor, host, proto, null);
     }
 
