@@ -122,7 +122,7 @@ public class ReverseProxyTest {
 
         ContentResponse resp = client.GET(externalRP.uri().resolve("/"));
         assertThat(resp.getHeaders().getValuesList("Date"), hasSize(1));
-        assertThat(resp.getHeaders().getValuesList("Via"), contains("HTTP/1.1 internalrp", "HTTP/1.1 externalrp"));
+        assertThat(resp.getHeaders().getValuesList("Via"), contains("HTTP/1.1 internalrp, HTTP/1.1 externalrp"));
         assertThat(resp.getContentAsString(), is("The Via header is [HTTP/1.1 externalrp, HTTP/1.1 internalrp]" +
             " and forwarded is https with host " + externalRP.uri().getAuthority() + ", http with host "
             + externalRP.uri().getAuthority()));

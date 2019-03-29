@@ -29,8 +29,8 @@ public class ReverseProxy implements MuHandler {
     public static final Set<String> HOP_BY_HOP_HEADERS = Collections.unmodifiableSet(new HashSet<>(asList(
         "keep-alive", "transfer-encoding", "te", "connection", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate")));
 
-    private static final Set<String> FORWARDED_HEADERS = Collections.unmodifiableSet(new HashSet<>(asList(
-        "forwarded", "x-forwarded-by", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port", "x-forwarded-server"
+    private static final Set<String> DO_NOT_PROXY = Collections.unmodifiableSet(new HashSet<>(asList(
+        "forwarded", "x-forwarded-by", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port", "x-forwarded-server", "via"
     )));
 
     private final AtomicLong counter = new AtomicLong();
@@ -118,7 +118,8 @@ public class ReverseProxy implements MuHandler {
                 String value = targetRespHeader.getValue();
                 clientResp.headers().add(targetRespHeader.getName(), value);
             }
-            clientResp.headers().add(HeaderNames.VIA, viaValue);
+            String newVia = getNewViaValue(viaValue, targetRespHeaders.getValuesList(HttpHeader.VIA));
+            clientResp.headers().set(HeaderNames.VIA, newVia);
         });
         targetReq.onResponseContentAsync((response, content, callback) -> asyncHandle.write(content,
             new WriteCallback() {
@@ -186,18 +187,25 @@ public class ReverseProxy implements MuHandler {
         for (Map.Entry<String, String> clientHeader : reqHeaders) {
             String key = clientHeader.getKey();
             String lowKey = key.toLowerCase();
-            if (HOP_BY_HOP_HEADERS.contains(lowKey) || FORWARDED_HEADERS.contains(lowKey) || customHopByHop.contains(lowKey)) {
+            if (HOP_BY_HOP_HEADERS.contains(lowKey) || DO_NOT_PROXY.contains(lowKey) || customHopByHop.contains(lowKey)) {
                 continue;
             }
             hasContentLengthOrTransferEncoding |= lowKey.equals("content-length") || lowKey.equals("transfer-encoding");
             targetRequest.header(key, clientHeader.getValue());
         }
 
-        targetRequest.header(HttpHeader.VIA, viaValue);
+        String newViaValue = getNewViaValue(viaValue, clientRequest.headers().getAll(HeaderNames.VIA));
+        targetRequest.header(HttpHeader.VIA, newViaValue);
 
         setForwardedHeaders(clientRequest, targetRequest, discardClientForwardedHeaders, sendLegacyForwardedHeaders);
 
         return hasContentLengthOrTransferEncoding;
+    }
+
+    private static String getNewViaValue(String viaValue, List<String> previousViasList) {
+        String previousVias = String.join(", ", previousViasList);
+        if (!previousVias.isEmpty()) previousVias += ", ";
+        return previousVias + viaValue;
     }
 
     /**
