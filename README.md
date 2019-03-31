@@ -42,3 +42,5 @@ public class QuickStart {
     }
 }
 ````
+
+For more documentation and a larger example, see <https://muserver.io/murp>

@@ -50,6 +50,8 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
     /**
      * Required value. Sets the mapper to use for creating target URIs.
      * <p>If you want to proxy all requests to a single destination, consider using {@link UriMapper#toDomain(URI)}</p>
+     * <p>If the mapper function returns null, then the handler will not proxy the request and the next handler in the
+     * chain will be invoked (or a 404 will be returned if there are no further handlers that can handle the request).</p>
      * @param uriMapper A mapper that creates a target URI based on a client request.
      * @return This builder
      */
