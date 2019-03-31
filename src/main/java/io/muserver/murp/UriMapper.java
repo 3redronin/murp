@@ -19,17 +19,13 @@ public interface UriMapper {
 
     /**
      * Creates a mapper that directs all requests to a new target domain.
-     * @param uri The target URI to send proxied requests to. Any path or query strings will be ignored.
+     * @param targetDomain The target URI to send proxied requests to. Any path or query strings will be ignored.
      * @return Returns a URI mapper that can be passed to {@link ReverseProxyBuilder#withUriMapper(UriMapper)}
      */
-    static UriMapper toDomain(URI uri) {
+    static UriMapper toDomain(URI targetDomain) {
         return request -> {
-            String pathAndQuery = request.uri().getRawPath();
-            String rawQuery = request.uri().getRawQuery();
-            if (rawQuery != null) {
-                pathAndQuery += "?" + rawQuery;
-            }
-            return uri.resolve(pathAndQuery);
+            String pathAndQuery = Murp.pathAndQuery(request.uri());
+            return targetDomain.resolve(pathAndQuery);
         };
     }
 

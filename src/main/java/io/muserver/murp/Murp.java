@@ -3,8 +3,12 @@ package io.muserver.murp;
 import io.muserver.MuServer;
 
 import java.io.InputStream;
+import java.net.URI;
 import java.util.Properties;
 
+/**
+ * Some utilities for the reverse proxy. If you want to create a reverse proxy, use {@link ReverseProxyBuilder#reverseProxy()}
+ */
 public class Murp {
 
     private static final String version;
@@ -36,4 +40,18 @@ public class Murp {
         return version;
     }
 
+    /**
+     * <p>Given a gets the raw path and (if present) querystring portion of a URI.</p>
+     * <p>Note: paths and querystrings are not URL decoded.</p>
+     * @param uri The URI to get the info from
+     * @return A string such as <code>/path?query=something</code>
+     */
+    public static String pathAndQuery(URI uri) {
+        String pathAndQuery = uri.getRawPath();
+        String rawQuery = uri.getRawQuery();
+        if (rawQuery != null) {
+            pathAndQuery += "?" + rawQuery;
+        }
+        return pathAndQuery;
+    }
 }
