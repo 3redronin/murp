@@ -15,6 +15,8 @@ import org.junit.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 import static io.muserver.MuServerBuilder.httpServer;
@@ -78,7 +80,9 @@ public class ReverseProxyTest {
     @Test
     public void viaHeadersCanBeSet() throws Exception {
         MuServer targetServer = httpsServer()
-            .addHandler(Method.GET, "/", (req, resp, pp) -> resp.write("The Via header is "
+            .addHandler(Method.GET, "/", (req, resp, pp) -> resp.write(
+                "The host header is " + req.headers().get("Host") +
+                " and the Via header is "
                 + req.headers().getAll("via") + " and forwarded is " + ForwardedHeader.toString(req.headers().forwarded())))
             .start();
 
@@ -92,7 +96,33 @@ public class ReverseProxyTest {
         ContentResponse resp = client.GET(reverseProxyServer.uri().resolve("/"));
         assertThat(resp.getHeaders().getCSV("Via", true), contains("HTTP/1.1 blardorph"));
         String body = resp.getContentAsString();
-        assertThat(body, startsWith("The Via header is [HTTP/1.1 blardorph] and forwarded is by="));
+        assertThat(body, startsWith("The host header is " + reverseProxyServer.uri().getAuthority() +
+            " and the Via header is [HTTP/1.1 blardorph] and forwarded is by="));
+        assertThat(body, endsWith(";host=\"" + reverseProxyServer.uri().getAuthority() + "\";proto=http"));
+    }
+
+    @Test
+    public void theHostNameProxyingCanBeTurnedOff() throws InterruptedException, ExecutionException, TimeoutException {
+        MuServer targetServer = httpsServer()
+            .addHandler(Method.GET, "/", (req, resp, pp) -> resp.write(
+                "The host header is " + req.headers().get("Host") +
+                    " and the Via header is "
+                    + req.headers().getAll("via") + " and forwarded is " + ForwardedHeader.toString(req.headers().forwarded())))
+            .start();
+
+        MuServer reverseProxyServer = httpServer()
+            .addHandler(reverseProxy()
+                .withViaName("blardorph")
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                .proxyHostHeader(false)
+            )
+            .start();
+
+        ContentResponse resp = client.GET(reverseProxyServer.uri().resolve("/"));
+        assertThat(resp.getHeaders().getCSV("Via", true), contains("HTTP/1.1 blardorph"));
+        String body = resp.getContentAsString();
+        assertThat(body, startsWith("The host header is " + targetServer.uri().getAuthority() +
+            " and the Via header is [HTTP/1.1 blardorph] and forwarded is by="));
         assertThat(body, endsWith(";host=\"" + reverseProxyServer.uri().getAuthority() + "\";proto=http"));
     }
 

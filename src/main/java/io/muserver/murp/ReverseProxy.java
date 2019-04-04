@@ -27,21 +27,16 @@ public class ReverseProxy implements MuHandler {
      * An unmodifiable set of the Hop By Hop headers. All are in lowercase.
      */
     public static final Set<String> HOP_BY_HOP_HEADERS = Collections.unmodifiableSet(new HashSet<>(asList(
-        "keep-alive", "transfer-encoding", "te", "connection", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate")));
+       "keep-alive", "transfer-encoding", "te", "connection", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate")));
 
-    private static final Set<String> DO_NOT_PROXY = Collections.unmodifiableSet(new HashSet<>(asList(
-        "forwarded", "x-forwarded-by", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port", "x-forwarded-server", "via"
-    )));
-
-    private final AtomicLong counter = new AtomicLong();
-    private final HttpClient httpClient;
-    private final UriMapper uriMapper;
-    private final long totalTimeoutInMillis;
-    private final List<ProxyCompleteListener> proxyCompleteListeners;
-
-    private static final String ipAddress;
+    private static final Set<String> REPRESSED;
 
     static {
+        REPRESSED = new HashSet<>(HOP_BY_HOP_HEADERS);
+        REPRESSED.addAll(new HashSet<>(asList(
+            "forwarded", "x-forwarded-by", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port", "x-forwarded-server", "via"
+        )));
+
         String ip;
         try {
             ip = InetAddress.getLocalHost().getHostAddress();
@@ -52,11 +47,24 @@ public class ReverseProxy implements MuHandler {
         ipAddress = ip;
     }
 
+
+    private final AtomicLong counter = new AtomicLong();
+    private final HttpClient httpClient;
+    private final UriMapper uriMapper;
+    private final long totalTimeoutInMillis;
+    private final List<ProxyCompleteListener> proxyCompleteListeners;
+
+    private final Set<String> doNotProxyToTarget = new HashSet<>();
+
+    private static final String ipAddress;
+
     private final String viaValue;
     private final boolean discardClientForwardedHeaders;
     private final boolean sendLegacyForwardedHeaders;
 
-    ReverseProxy(HttpClient httpClient, UriMapper uriMapper, long totalTimeoutInMillis, List<ProxyCompleteListener> proxyCompleteListeners, String viaName, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders) {
+    ReverseProxy(HttpClient httpClient, UriMapper uriMapper, long totalTimeoutInMillis, List<ProxyCompleteListener> proxyCompleteListeners,
+                 String viaName, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders,
+                 Set<String> additionalDoNotProxyHeaders) {
         this.httpClient = httpClient;
         this.uriMapper = uriMapper;
         this.totalTimeoutInMillis = totalTimeoutInMillis;
@@ -64,6 +72,8 @@ public class ReverseProxy implements MuHandler {
         this.viaValue = "HTTP/1.1 " + viaName;
         this.discardClientForwardedHeaders = discardClientForwardedHeaders;
         this.sendLegacyForwardedHeaders = sendLegacyForwardedHeaders;
+        this.doNotProxyToTarget.addAll(REPRESSED);
+        additionalDoNotProxyHeaders.forEach(h -> this.doNotProxyToTarget.add(h.toLowerCase()));
     }
 
     @Override
@@ -83,7 +93,7 @@ public class ReverseProxy implements MuHandler {
 
         Request targetReq = httpClient.newRequest(target);
         targetReq.method(clientReq.method().name());
-        boolean hasRequestBody = setRequestHeaders(clientReq, targetReq, discardClientForwardedHeaders, sendLegacyForwardedHeaders, viaValue);
+        boolean hasRequestBody = setTargetRequestHeaders(clientReq, targetReq, discardClientForwardedHeaders, sendLegacyForwardedHeaders, viaValue, doNotProxyToTarget);
 
         if (hasRequestBody) {
             DeferredContentProvider targetReqBody = new DeferredContentProvider();
@@ -180,6 +190,10 @@ public class ReverseProxy implements MuHandler {
     public static boolean setRequestHeaders(MuRequest clientRequest, Request targetRequest, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders, String viaValue) {
         Mutils.notNull("clientRequest", clientRequest);
         Mutils.notNull("targetRequest", targetRequest);
+        return setTargetRequestHeaders(clientRequest, targetRequest, discardClientForwardedHeaders, sendLegacyForwardedHeaders, viaValue, REPRESSED);
+    }
+
+    private static boolean setTargetRequestHeaders(MuRequest clientRequest, Request targetRequest, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders, String viaValue, Set<String> excludedHeaders) {
         Headers reqHeaders = clientRequest.headers();
         List<String> customHopByHop = getCustomHopByHopHeaders(reqHeaders.get(HeaderNames.CONNECTION));
 
@@ -187,7 +201,7 @@ public class ReverseProxy implements MuHandler {
         for (Map.Entry<String, String> clientHeader : reqHeaders) {
             String key = clientHeader.getKey();
             String lowKey = key.toLowerCase();
-            if (HOP_BY_HOP_HEADERS.contains(lowKey) || DO_NOT_PROXY.contains(lowKey) || customHopByHop.contains(lowKey)) {
+            if (excludedHeaders.contains(lowKey) || customHopByHop.contains(lowKey)) {
                 continue;
             }
             hasContentLengthOrTransferEncoding |= lowKey.equals("content-length") || lowKey.equals("transfer-encoding");

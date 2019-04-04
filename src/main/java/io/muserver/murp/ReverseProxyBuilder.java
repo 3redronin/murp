@@ -7,7 +7,9 @@ import org.eclipse.jetty.client.HttpClient;
 
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static java.util.Collections.emptyList;
@@ -24,6 +26,7 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
     private boolean discardClientForwardedHeaders;
     private long totalTimeoutInMillis = TimeUnit.MINUTES.toMillis(5);
     private List<ProxyCompleteListener> proxyCompleteListeners;
+    private Set<String> doNotProxyHeaders = new HashSet<>();
 
     /**
      * The name to add as the <code>Via</code> header, which defaults to <code>private</code>.
@@ -69,6 +72,25 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
      */
     public ReverseProxyBuilder sendLegacyForwardedHeaders(boolean sendLegacyForwardedHeaders) {
         this.sendLegacyForwardedHeaders = sendLegacyForwardedHeaders;
+        return this;
+    }
+
+    /**
+     * <p>Specifies whether or not to send the original <code>Host</code> header to the target server.</p>
+     * <p>Reverse proxies are generally supposed to forward the original <code>Host</code> header to target
+     * servers, however there are cases (particularly where you are proxying to HTTPS servers) that the
+     * Host needs to match the Host of the SSL certificate (in which case you may see SNI-related errors).</p>
+     * @param sendHostToTarget If <code>true</code> (which is the default) the <code>Host</code> request
+     *                         header will be sent to the target; if <code>false</code> then the host header
+     *                         will be based on the target's URL.
+     * @return This builder
+     */
+    public ReverseProxyBuilder proxyHostHeader(boolean sendHostToTarget) {
+        if (sendHostToTarget) {
+            doNotProxyHeaders.remove("host");
+        } else {
+            doNotProxyHeaders.add("host");
+        }
         return this;
     }
 
@@ -143,6 +165,6 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
         if (proxyCompleteListeners == null) {
             proxyCompleteListeners = emptyList();
         }
-        return new ReverseProxy(client, uriMapper, totalTimeoutInMillis, proxyCompleteListeners, viaName, discardClientForwardedHeaders, sendLegacyForwardedHeaders);
+        return new ReverseProxy(client, uriMapper, totalTimeoutInMillis, proxyCompleteListeners, viaName, discardClientForwardedHeaders, sendLegacyForwardedHeaders, doNotProxyHeaders);
     }
 }

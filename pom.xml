@@ -6,7 +6,7 @@
 
     <groupId>io.muserver</groupId>
     <artifactId>murp</artifactId>
-    <version>0.2-SNAPSHOT</version>
+    <version>0.3-SNAPSHOT</version>
     <url>https://github.com/3redronin/murp</url>
     <name>murp</name>
     <description>A reverse proxy handler for Mu Server</description>
@@ -64,7 +64,7 @@
         <dependency>
             <groupId>io.muserver</groupId>
             <artifactId>mu-server</artifactId>
-            <version>0.25.0</version>
+            <version>0.26.2</version>
         </dependency>
         <dependency>
             <groupId>org.eclipse.jetty</groupId>
