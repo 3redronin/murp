@@ -74,7 +74,7 @@ public class ReverseProxyTest {
         assertThat(headers.get("Via"), is("HTTP/1.1 private"));
         assertThat(headers.get("Forwarded"), is(nullValue()));
         assertThat(someText.getContentAsString(), is("Hello: " + requestBody));
-        assertThat(notifications, contains("Did POST /some-text and returned a 201 from " + targetServer.uri().resolve("/some-text")));
+        assertThat("Actual: " + notifications, notifications, contains("Did POST /some-text and returned a 201 from " + targetServer.uri().resolve("/some-text")));
     }
 
     @Test
