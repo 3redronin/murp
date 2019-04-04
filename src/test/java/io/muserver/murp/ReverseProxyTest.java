@@ -15,7 +15,9 @@ import org.junit.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
@@ -48,12 +50,15 @@ public class ReverseProxyTest {
             .start();
 
         List<String> notifications = new ArrayList<>();
+        CountDownLatch notificationAddedLatch = new CountDownLatch(1);
 
         MuServer reverseProxyServer = httpsServer()
             .addHandler(reverseProxy()
                 .withUriMapper(UriMapper.toDomain(targetServer.uri()))
-                .addProxyCompleteListener((clientRequest, clientResponse, target, durationMillis)
-                    -> notifications.add("Did " + clientRequest.method() + " " + clientRequest.uri().getPath() + " and returned a " + clientResponse.status() + " from " + target))
+                .addProxyCompleteListener((clientRequest, clientResponse, target, durationMillis) -> {
+                    notifications.add("Did " + clientRequest.method() + " " + clientRequest.uri().getPath() + " and returned a " + clientResponse.status() + " from " + target);
+                    notificationAddedLatch.countDown();
+                })
             )
             .start();
 
@@ -74,6 +79,8 @@ public class ReverseProxyTest {
         assertThat(headers.get("Via"), is("HTTP/1.1 private"));
         assertThat(headers.get("Forwarded"), is(nullValue()));
         assertThat(someText.getContentAsString(), is("Hello: " + requestBody));
+        assertThat("Timed out waiting for notification",
+            notificationAddedLatch.await(10, TimeUnit.SECONDS), is(true));
         assertThat("Actual: " + notifications, notifications, contains("Did POST /some-text and returned a 201 from " + targetServer.uri().resolve("/some-text")));
     }
 
@@ -82,8 +89,8 @@ public class ReverseProxyTest {
         MuServer targetServer = httpsServer()
             .addHandler(Method.GET, "/", (req, resp, pp) -> resp.write(
                 "The host header is " + req.headers().get("Host") +
-                " and the Via header is "
-                + req.headers().getAll("via") + " and forwarded is " + ForwardedHeader.toString(req.headers().forwarded())))
+                    " and the Via header is "
+                    + req.headers().getAll("via") + " and forwarded is " + ForwardedHeader.toString(req.headers().forwarded())))
             .start();
 
         MuServer reverseProxyServer = httpServer()
