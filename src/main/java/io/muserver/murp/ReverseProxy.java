@@ -149,12 +149,14 @@ public class ReverseProxy implements MuHandler {
             try {
                 if (result.isFailed()) {
                     String errorID = UUID.randomUUID().toString();
-                    log.error("Failed to proxy response. ErrorID=" + errorID + " for " + result, result.getFailure());
+                    if (log.isDebugEnabled()) {
+                        log.debug("Failed to proxy response. ErrorID=" + errorID + " for " + result, result.getFailure());
+                    }
                     if (!clientResp.hasStartedSendingData()) {
                         clientResp.contentType(ContentTypes.TEXT_HTML);
                         if (result.getFailure() instanceof TimeoutException) {
                             clientResp.status(504);
-                            clientResp.write("<h1>504 Gateway Timeout</h1><p>ErrorID=" + errorID + "</p>");
+                            clientResp.write("<h1>504 Gateway Timeout</h1><p>The target did not respond in a timely manner. ErrorID=" + errorID + "</p>");
                         } else {
                             clientResp.status(502);
                             clientResp.write("<h1>502 Bad Gateway</h1><p>ErrorID=" + errorID + "</p>");

@@ -51,6 +51,16 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
     }
 
     /**
+     * Specifies the Jetty HTTP client to use to make the request to the target server. It's recommended
+     * you do not set this in order to use the default client that is optimised for reverse proxy usage.
+     * @param clientBuilder The HTTP client to use, or null to use the default client.
+     * @return This builder
+     */
+    public ReverseProxyBuilder withHttpClient(HttpClientBuilder clientBuilder) {
+        return withHttpClient(clientBuilder == null ? null : clientBuilder.build());
+    }
+
+    /**
      * Required value. Sets the mapper to use for creating target URIs.
      * <p>If you want to proxy all requests to a single destination, consider using {@link UriMapper#toDomain(URI)}</p>
      * <p>If the mapper function returns null, then the handler will not proxy the request and the next handler in the
