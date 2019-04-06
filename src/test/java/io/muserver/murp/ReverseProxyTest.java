@@ -197,6 +197,7 @@ public class ReverseProxyTest {
                         headers.remove("X-Added-By-Target");
                     }
                 })
+                .addProxyCompleteListener(new Slf4jResponseLogger())
             )
             .start();
 
