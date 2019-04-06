@@ -112,7 +112,6 @@
                 <artifactId>multi-module-maven-release-plugin</artifactId>
                 <version>3.1.2</version>
                 <configuration>
-                    <privateKey>C:\\Users\\passp\\.ssh\\id_rsa</privateKey>
                     <releaseGoals>
                         <releaseGoal>clean</releaseGoal>
                         <releaseGoal>deploy</releaseGoal>
