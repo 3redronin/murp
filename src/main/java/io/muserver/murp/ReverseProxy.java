@@ -61,10 +61,12 @@ public class ReverseProxy implements MuHandler {
     private final String viaValue;
     private final boolean discardClientForwardedHeaders;
     private final boolean sendLegacyForwardedHeaders;
+    private final RequestInterceptor requestInterceptor;
+    private final ResponseInterceptor responseInterceptor;
 
     ReverseProxy(HttpClient httpClient, UriMapper uriMapper, long totalTimeoutInMillis, List<ProxyCompleteListener> proxyCompleteListeners,
                  String viaName, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders,
-                 Set<String> additionalDoNotProxyHeaders) {
+                 Set<String> additionalDoNotProxyHeaders, RequestInterceptor requestInterceptor, ResponseInterceptor responseInterceptor) {
         this.httpClient = httpClient;
         this.uriMapper = uriMapper;
         this.totalTimeoutInMillis = totalTimeoutInMillis;
@@ -72,6 +74,8 @@ public class ReverseProxy implements MuHandler {
         this.viaValue = "HTTP/1.1 " + viaName;
         this.discardClientForwardedHeaders = discardClientForwardedHeaders;
         this.sendLegacyForwardedHeaders = sendLegacyForwardedHeaders;
+        this.requestInterceptor = requestInterceptor;
+        this.responseInterceptor = responseInterceptor;
         this.doNotProxyToTarget.addAll(REPRESSED);
         additionalDoNotProxyHeaders.forEach(h -> this.doNotProxyToTarget.add(h.toLowerCase()));
     }
@@ -89,7 +93,9 @@ public class ReverseProxy implements MuHandler {
 
         final AsyncHandle asyncHandle = clientReq.handleAsync();
         final long id = counter.incrementAndGet();
-        log.info("[" + id + "] Proxying from " + clientReq.uri() + " to " + target);
+        if (log.isDebugEnabled()) {
+            log.debug("[" + id + "] Proxying from " + clientReq.uri() + " to " + target);
+        }
 
         Request targetReq = httpClient.newRequest(target);
         targetReq.method(clientReq.method().name());
@@ -130,6 +136,13 @@ public class ReverseProxy implements MuHandler {
             }
             String newVia = getNewViaValue(viaValue, targetRespHeaders.getValuesList(HttpHeader.VIA));
             clientResp.headers().set(HeaderNames.VIA, newVia);
+            if (responseInterceptor != null) {
+                try {
+                    responseInterceptor.intercept(clientReq, targetReq, response, clientResp);
+                } catch (Exception e) {
+                    log.error("Error while intercepting the response. The response will still be proxied.", e);
+                }
+            }
         });
         targetReq.onResponseContentAsync((response, content, callback) -> asyncHandle.write(content,
             new WriteCallback() {
@@ -144,6 +157,10 @@ public class ReverseProxy implements MuHandler {
                 }
             }));
         targetReq.timeout(totalTimeoutInMillis, TimeUnit.MILLISECONDS);
+
+        if (requestInterceptor != null) {
+            requestInterceptor.intercept(clientReq, targetReq);
+        }
         targetReq.send(result -> {
             long duration = System.currentTimeMillis() - start;
             try {
@@ -163,7 +180,9 @@ public class ReverseProxy implements MuHandler {
                         }
                     }
                 } else {
-                    log.info("[" + id + "] completed in " + duration + "ms: " + result);
+                    if (log.isDebugEnabled()) {
+                        log.info("[" + id + "] completed in " + duration + "ms: " + result);
+                    }
                 }
             } finally {
                 asyncHandle.complete();

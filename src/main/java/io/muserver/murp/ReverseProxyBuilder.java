@@ -27,6 +27,8 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
     private long totalTimeoutInMillis = TimeUnit.MINUTES.toMillis(5);
     private List<ProxyCompleteListener> proxyCompleteListeners;
     private Set<String> doNotProxyHeaders = new HashSet<>();
+    private RequestInterceptor requestInterceptor;
+    private ResponseInterceptor responseInterceptor;
 
     /**
      * The name to add as the <code>Via</code> header, which defaults to <code>private</code>.
@@ -150,6 +152,28 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
     }
 
     /**
+     * Adds an interceptor to the point where a request to the target server has been prepared, but not sent. This
+     * allows you to change the headers being proxied to the target server.
+     * @param requestInterceptor An interceptor that may change the target request, or null to not have an interceptor.
+     * @return This builder.
+     */
+    public ReverseProxyBuilder withRequestInterceptor(RequestInterceptor requestInterceptor) {
+        this.requestInterceptor = requestInterceptor;
+        return this;
+    }
+
+    /**
+     * Adds an interceptor to the point where a response to the client has been prepared, but not sent. This
+     * allows you to change the response code or headers being returned to the client.
+     * @param responseInterceptor An interceptor that may change the client response, or null to not have an interceptor.
+     * @return This builder.
+     */
+    public ReverseProxyBuilder withResponseInterceptor(ResponseInterceptor responseInterceptor) {
+        this.responseInterceptor = responseInterceptor;
+        return this;
+    }
+
+    /**
      * Creates and returns a new instance of a reverse proxy builder.
      * @return A builder
      */
@@ -175,6 +199,8 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
         if (proxyCompleteListeners == null) {
             proxyCompleteListeners = emptyList();
         }
-        return new ReverseProxy(client, uriMapper, totalTimeoutInMillis, proxyCompleteListeners, viaName, discardClientForwardedHeaders, sendLegacyForwardedHeaders, doNotProxyHeaders);
+        return new ReverseProxy(client, uriMapper, totalTimeoutInMillis, proxyCompleteListeners, viaName,
+            discardClientForwardedHeaders, sendLegacyForwardedHeaders, doNotProxyHeaders,
+            requestInterceptor, responseInterceptor);
     }
 }

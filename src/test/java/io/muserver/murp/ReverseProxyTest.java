@@ -1,10 +1,10 @@
 package io.muserver.murp;
 
-import io.muserver.ForwardedHeader;
-import io.muserver.Method;
-import io.muserver.MuServer;
+import io.muserver.*;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.api.ContentResponse;
+import org.eclipse.jetty.client.api.Request;
+import org.eclipse.jetty.client.api.Response;
 import org.eclipse.jetty.client.util.StringContentProvider;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
@@ -164,6 +164,50 @@ public class ReverseProxyTest {
             " and forwarded is https with host " + externalRP.uri().getAuthority() + ", http with host "
             + externalRP.uri().getAuthority()));
     }
+
+    @Test
+    public void proxyingCanBeIntercepted() throws Exception {
+        MuServer targetServer = httpServer()
+            .addHandler(Method.GET, "/", (req, resp, pp) -> {
+                resp.headers().add("X-Added-By-Target", "Boo");
+                resp.write(
+                    "X-Blocked = " + req.headers().get("X-Blocked") + ", X-Added = " + req.headers().get("X-Added")
+                );
+            })
+            .start();
+
+        MuServer reverseProxyServer = httpServer()
+            .addHandler(reverseProxy()
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                .withRequestInterceptor(new RequestInterceptor() {
+                    @Override
+                    public void intercept(MuRequest clientRequest, Request targetRequest) {
+                        clientRequest.attribute("blah", "blah-blah-blah");
+                        targetRequest.header("X-Blocked", null);
+                        targetRequest.header("X-Added", "I was added");
+                    }
+                })
+                .withResponseInterceptor(new ResponseInterceptor() {
+                    @Override
+                    public void intercept(MuRequest clientRequest, Request targetRequest, Response targetResponse, MuResponse clientResponse) {
+                        clientResponse.status(400);
+                        Headers headers = clientResponse.headers();
+                        headers.set("X-Blah", clientRequest.attribute("blah"));
+                        headers.set("X-Added-By-Resp", "Added-by-resp");
+                        headers.remove("X-Added-By-Target");
+                    }
+                })
+            )
+            .start();
+
+        ContentResponse resp = client.GET(reverseProxyServer.uri().resolve("/"));
+        assertThat(resp.getStatus(), is(400));
+        assertThat(resp.getHeaders().getValuesList("X-Added-By-Resp"), contains("Added-by-resp"));
+        assertThat(resp.getHeaders().getValuesList("X-Added-By-Target"), empty());
+        String body = resp.getContentAsString();
+        assertThat(body, equalTo("X-Blocked = null, X-Added = I was added"));
+    }
+
 
     private String largeRandomString() {
         StringBuilder sb = new StringBuilder();

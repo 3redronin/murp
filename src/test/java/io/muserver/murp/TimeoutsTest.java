@@ -53,7 +53,10 @@ public class TimeoutsTest {
                 (request, response, pathParams) -> {
                     response.sendChunk("Hello");
                     Thread.sleep(200);
-                    response.sendChunk("Goodbye");
+                    try {
+                        response.sendChunk("Goodbye");
+                    } catch (Exception ignored) {
+                    }
                 })
             .start();
 
