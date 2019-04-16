@@ -91,6 +91,7 @@ public class HttpClientBuilder {
         client.setAddressResolutionTimeout(addressResolutionTimeoutMillis);
         client.setConnectTimeout(connectTimeoutMillis);
         client.setIdleTimeout(idleTimeoutMillis);
+        client.setRequestBufferSize(16 * 1024);
         client.setUserAgentField(null);
         try {
             client.start();
