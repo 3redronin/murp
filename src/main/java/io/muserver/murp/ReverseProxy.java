@@ -58,7 +58,7 @@ public class ReverseProxy implements MuHandler {
 
     private static final String ipAddress;
 
-    private final String viaValue;
+    private final String viaName;
     private final boolean discardClientForwardedHeaders;
     private final boolean sendLegacyForwardedHeaders;
     private final RequestInterceptor requestInterceptor;
@@ -71,7 +71,7 @@ public class ReverseProxy implements MuHandler {
         this.uriMapper = uriMapper;
         this.totalTimeoutInMillis = totalTimeoutInMillis;
         this.proxyCompleteListeners = proxyCompleteListeners;
-        this.viaValue = "HTTP/1.1 " + viaName;
+        this.viaName = viaName;
         this.discardClientForwardedHeaders = discardClientForwardedHeaders;
         this.sendLegacyForwardedHeaders = sendLegacyForwardedHeaders;
         this.requestInterceptor = requestInterceptor;
@@ -99,6 +99,7 @@ public class ReverseProxy implements MuHandler {
 
         Request targetReq = httpClient.newRequest(target);
         targetReq.method(clientReq.method().name());
+        String viaValue = clientReq.protocol() + " " + viaName;
         boolean hasRequestBody = setTargetRequestHeaders(clientReq, targetReq, discardClientForwardedHeaders, sendLegacyForwardedHeaders, viaValue, doNotProxyToTarget);
 
         if (hasRequestBody) {

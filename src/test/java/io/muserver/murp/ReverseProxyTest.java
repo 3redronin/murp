@@ -1,6 +1,7 @@
 package io.muserver.murp;
 
 import io.muserver.*;
+import io.muserver.handlers.ResourceHandlerBuilder;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.client.api.Request;
@@ -9,9 +10,14 @@ import org.eclipse.jetty.client.util.StringContentProvider;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.junit.AfterClass;
+import org.junit.Assume;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -20,10 +26,14 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
+import java.util.zip.GZIPInputStream;
 
 import static io.muserver.MuServerBuilder.httpServer;
 import static io.muserver.MuServerBuilder.httpsServer;
+import static io.muserver.murp.ClientUtils.call;
+import static io.muserver.murp.ClientUtils.request;
 import static io.muserver.murp.ReverseProxyBuilder.reverseProxy;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
 
@@ -85,6 +95,34 @@ public class ReverseProxyTest {
     }
 
     @Test
+    public void gzipGetsProxiedAsGzip() throws Exception {
+        runIfJava9OrLater();
+        Toggles.http2 = true;
+        MuServer targetServer = httpServer()
+            .addHandler(ResourceHandlerBuilder.fileHandler("."))
+            .start();
+
+        MuServer reverseProxyServer = httpsServer()
+            .addHandler(reverseProxy().withUriMapper(UriMapper.toDomain(targetServer.uri())))
+            .start();
+
+        try (okhttp3.Response resp = call(request(reverseProxyServer.uri().resolve("/pom.xml"))
+            .header("Accept-Encoding", "hmm, gzip, deflate"))) { // custom header stops okhttpclient from hiding gzip
+            assertThat(resp.code(), is(200));
+            assertThat(resp.header("content-encoding"), is("gzip"));
+            String expected = new String(Files.readAllBytes(Paths.get("pom.xml")), UTF_8);
+            String unzipped;
+            try (ByteArrayOutputStream boas = new ByteArrayOutputStream();
+                 InputStream is = new GZIPInputStream(resp.body().byteStream())) {
+                Mutils.copy(is, boas, 8192);
+                unzipped = boas.toString("UTF-8");
+            }
+            assertThat(unzipped, equalTo(expected));
+        }
+    }
+
+
+    @Test
     public void viaHeadersCanBeSet() throws Exception {
         MuServer targetServer = httpsServer()
             .addHandler(Method.GET, "/", (req, resp, pp) -> resp.write(
@@ -134,7 +172,7 @@ public class ReverseProxyTest {
     }
 
     @Test
-    public void multipleHopsCanBeMade() throws Exception {
+    public void http1ToHttp1ToHttp1Works() throws Exception {
         MuServer targetServer = httpServer()
             .addHandler(Method.GET, "/", (req, resp, pp) -> {
                 String forwarded = req.headers().forwarded().stream().map(f -> f.proto() + " with host " + f.host()).collect(Collectors.joining(", "));
@@ -163,6 +201,87 @@ public class ReverseProxyTest {
         assertThat(resp.getContentAsString(), is("The Via header is [HTTP/1.1 externalrp, HTTP/1.1 internalrp]" +
             " and forwarded is https with host " + externalRP.uri().getAuthority() + ", http with host "
             + externalRP.uri().getAuthority()));
+    }
+
+    @Test
+    public void http2ToHttp1ToTargetWorks() throws Exception {
+        runIfJava9OrLater();
+        MuServer targetServer = httpServer()
+            .addHandler(Method.GET, "/", (req, resp, pp) -> {
+                String forwarded = req.headers().forwarded().stream().map(f -> f.proto() + " with host " + f.host()).collect(Collectors.joining(", "));
+                resp.write("The Via header is "
+                    + req.headers().getAll("via") + " and forwarded is " + forwarded);
+            })
+            .start();
+
+        MuServer internalRP = httpServer()
+            .addHandler(reverseProxy()
+                .withViaName("internalrp")
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+            )
+            .start();
+
+        Toggles.http2 = true;
+        MuServer externalRP = httpsServer()
+            .addHandler(reverseProxy()
+                .withViaName("externalrp")
+                .withUriMapper(UriMapper.toDomain(internalRP.uri()))
+            )
+            .start();
+        Toggles.http2 = false;
+
+        try (okhttp3.Response resp = call(request(externalRP.uri().resolve("/")))) {
+            assertThat(resp.code(), is(200));
+            assertThat(resp.headers("date"), hasSize(1));
+            assertThat(resp.headers("via"), contains("HTTP/1.1 internalrp, HTTP/2 externalrp"));
+            assertThat(resp.body().string(), is("The Via header is [HTTP/2 externalrp, HTTP/1.1 internalrp]" +
+                " and forwarded is https with host " + externalRP.uri().getAuthority() + ", http with host "
+                + externalRP.uri().getAuthority()));
+        }
+    }
+
+    @Test
+    public void http1ToHttp2ToHttp2TargetWorks() throws Exception {
+        runIfJava9OrLater();
+
+        Toggles.http2 = true;
+        MuServer targetServer = httpServer()
+            .addHandler(Method.GET, "/", (req, resp, pp) -> {
+                String forwarded = req.headers().forwarded().stream().map(f -> f.proto() + " with host " + f.host()).collect(Collectors.joining(", "));
+                resp.write("The Via header is "
+                    + req.headers().getAll("via") + " and forwarded is " + forwarded);
+            })
+            .start();
+
+        MuServer internalRP = httpServer()
+            .addHandler(reverseProxy()
+                .withViaName("internalrp")
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+            )
+            .start();
+
+        Toggles.http2 = false;
+        MuServer externalRP = httpsServer()
+            .addHandler(reverseProxy()
+                .withViaName("externalrp")
+                .withUriMapper(UriMapper.toDomain(internalRP.uri()))
+            )
+            .start();
+
+        try (okhttp3.Response resp = call(request(externalRP.uri().resolve("/")))) {
+            assertThat(resp.code(), is(200));
+            assertThat(resp.headers("date"), hasSize(1));
+            // Note: internalrp is expected as 1.1 rather than 2 because the Jetty client in the RP makes 1.1 calls
+            assertThat(resp.headers("via"), contains("HTTP/1.1 internalrp, HTTP/1.1 externalrp"));
+            assertThat(resp.body().string(), is("The Via header is [HTTP/1.1 externalrp, HTTP/1.1 internalrp]" +
+                " and forwarded is https with host " + externalRP.uri().getAuthority() + ", http with host "
+                + externalRP.uri().getAuthority()));
+        }
+
+    }
+
+    private void runIfJava9OrLater() {
+        Assume.assumeThat("This test runs only on java 9 an later", System.getProperty("java.specification.version"), not(equalTo("1.8")));
     }
 
     @Test

@@ -10,6 +10,7 @@ import org.eclipse.jetty.util.ssl.SslContextFactory;
  */
 public class HttpClientBuilder {
 
+    private int requestBufferSize = 16 * 1024;
     private long idleTimeoutMillis = 60000;
     private long connectTimeoutMillis = 15000;
     private long addressResolutionTimeoutMillis = 15000;
@@ -34,6 +35,16 @@ public class HttpClientBuilder {
      */
     public HttpClientBuilder withConnectTimeoutMillis(long connectTimeoutMillis) {
         this.connectTimeoutMillis = connectTimeoutMillis;
+        return this;
+    }
+
+    /**
+     * Sets the maximum size of request headers that can be proxied. The default is 16384 bytes.
+     * @param maxSizeInBytes The max size in bytes of the request headers on proxy calls to the target
+     * @return This builder
+     */
+    public HttpClientBuilder withMaxRequestHeadersSize(int maxSizeInBytes) {
+        this.requestBufferSize = maxSizeInBytes;
         return this;
     }
 
@@ -91,7 +102,7 @@ public class HttpClientBuilder {
         client.setAddressResolutionTimeout(addressResolutionTimeoutMillis);
         client.setConnectTimeout(connectTimeoutMillis);
         client.setIdleTimeout(idleTimeoutMillis);
-        client.setRequestBufferSize(16 * 1024);
+        client.setRequestBufferSize(requestBufferSize);
         client.setUserAgentField(null);
         try {
             client.start();

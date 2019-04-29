@@ -11,7 +11,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import static org.hamcrest.Matchers.equalTo;
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertThat;
 
 public class UriMapperTest {
 
@@ -174,6 +174,11 @@ public class UriMapperTest {
             @Override
             public boolean isAsync() {
                 return false;
+            }
+
+            @Override
+            public String protocol() {
+                return null;
             }
         };
     }
