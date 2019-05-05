@@ -8,10 +8,8 @@ import org.eclipse.jetty.client.api.Request;
 import org.eclipse.jetty.client.api.Response;
 import org.eclipse.jetty.client.util.StringContentProvider;
 import org.eclipse.jetty.http.HttpFields;
-import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.junit.AfterClass;
 import org.junit.Assume;
-import org.junit.BeforeClass;
 import org.junit.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -32,6 +30,7 @@ import static io.muserver.MuServerBuilder.httpServer;
 import static io.muserver.MuServerBuilder.httpsServer;
 import static io.muserver.murp.ClientUtils.call;
 import static io.muserver.murp.ClientUtils.request;
+import static io.muserver.murp.HttpClientBuilder.httpClient;
 import static io.muserver.murp.ReverseProxyBuilder.reverseProxy;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -39,12 +38,10 @@ import static org.hamcrest.Matchers.*;
 
 public class ReverseProxyTest {
 
-    private static final HttpClient client = new HttpClient(new SslContextFactory(true));
+    private static final HttpClient client = HttpClientBuilder.httpClient()
+        .withMaxRequestHeadersSize(32768)
+        .build();
 
-    @BeforeClass
-    public static void start() throws Exception {
-        client.start();
-    }
 
     @Test
     public void itCanProxyEverythingToATargetDomain() throws Exception {
@@ -328,6 +325,35 @@ public class ReverseProxyTest {
         assertThat(body, equalTo("X-Blocked = null, X-Added = I was added"));
     }
 
+    @Test
+    public void largeHeadersCanBeConfigured() throws Exception {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 26000; i++) {
+            sb.append("a");
+        }
+        String value = sb.toString();
+        int maxHeaderSize = 32768;
+        MuServer targetServer = httpServer()
+            .withMaxHeadersSize(maxHeaderSize)
+            .addHandler(Method.GET, "/", (req, resp, pp) -> {
+                resp.write(req.headers().get("X-Large"));
+            })
+            .start();
+
+        MuServer rp = httpServer()
+            .withMaxHeadersSize(maxHeaderSize)
+            .addHandler(reverseProxy()
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                .withHttpClient(httpClient().withMaxRequestHeadersSize(maxHeaderSize))
+            )
+            .start();
+
+        ContentResponse resp = client.newRequest(rp.uri().resolve("/"))
+            .header("X-Large", value)
+            .send();
+        assertThat(resp.getContentAsString(), equalTo(value));
+
+    }
 
     private String largeRandomString() {
         StringBuilder sb = new StringBuilder();

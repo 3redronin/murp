@@ -111,6 +111,7 @@ public class HttpClientBuilder {
         }
 
         client.getContentDecoderFactories().clear();
+        client.getProtocolHandlers().clear();
 
         return client;
     }
