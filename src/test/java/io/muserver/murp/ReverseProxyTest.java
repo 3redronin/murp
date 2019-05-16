@@ -26,6 +26,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
+import static io.muserver.Http2ConfigBuilder.http2EnabledIfAvailable;
 import static io.muserver.MuServerBuilder.httpServer;
 import static io.muserver.MuServerBuilder.httpsServer;
 import static io.muserver.murp.ClientUtils.call;
@@ -93,13 +94,13 @@ public class ReverseProxyTest {
 
     @Test
     public void gzipGetsProxiedAsGzip() throws Exception {
-        runIfJava9OrLater();
-        Toggles.http2 = true;
         MuServer targetServer = httpServer()
+            .withHttp2Config(http2EnabledIfAvailable())
             .addHandler(ResourceHandlerBuilder.fileHandler("."))
             .start();
 
         MuServer reverseProxyServer = httpsServer()
+            .withHttp2Config(http2EnabledIfAvailable())
             .addHandler(reverseProxy().withUriMapper(UriMapper.toDomain(targetServer.uri())))
             .start();
 
@@ -218,14 +219,13 @@ public class ReverseProxyTest {
             )
             .start();
 
-        Toggles.http2 = true;
         MuServer externalRP = httpsServer()
+            .withHttp2Config(http2EnabledIfAvailable())
             .addHandler(reverseProxy()
                 .withViaName("externalrp")
                 .withUriMapper(UriMapper.toDomain(internalRP.uri()))
             )
             .start();
-        Toggles.http2 = false;
 
         try (okhttp3.Response resp = call(request(externalRP.uri().resolve("/")))) {
             assertThat(resp.code(), is(200));
@@ -241,8 +241,8 @@ public class ReverseProxyTest {
     public void http1ToHttp2ToHttp2TargetWorks() throws Exception {
         runIfJava9OrLater();
 
-        Toggles.http2 = true;
         MuServer targetServer = httpServer()
+            .withHttp2Config(http2EnabledIfAvailable())
             .addHandler(Method.GET, "/", (req, resp, pp) -> {
                 String forwarded = req.headers().forwarded().stream().map(f -> f.proto() + " with host " + f.host()).collect(Collectors.joining(", "));
                 resp.write("The Via header is "
@@ -257,7 +257,6 @@ public class ReverseProxyTest {
             )
             .start();
 
-        Toggles.http2 = false;
         MuServer externalRP = httpsServer()
             .addHandler(reverseProxy()
                 .withViaName("externalrp")
