@@ -34,7 +34,7 @@ public class ReverseProxy implements MuHandler {
     static {
         REPRESSED = new HashSet<>(HOP_BY_HOP_HEADERS);
         REPRESSED.addAll(new HashSet<>(asList(
-            "forwarded", "x-forwarded-by", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port", "x-forwarded-server", "via"
+            "forwarded", "x-forwarded-by", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port", "x-forwarded-server", "via", "expect"
         )));
 
         String ip;
