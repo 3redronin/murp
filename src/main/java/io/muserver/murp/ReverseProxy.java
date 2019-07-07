@@ -7,6 +7,7 @@ import org.eclipse.jetty.client.util.DeferredContentProvider;
 import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
+import org.eclipse.jetty.util.Callback;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,7 +28,7 @@ public class ReverseProxy implements MuHandler {
      * An unmodifiable set of the Hop By Hop headers. All are in lowercase.
      */
     public static final Set<String> HOP_BY_HOP_HEADERS = Collections.unmodifiableSet(new HashSet<>(asList(
-       "keep-alive", "transfer-encoding", "te", "connection", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate")));
+        "keep-alive", "transfer-encoding", "te", "connection", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate")));
 
     private static final Set<String> REPRESSED;
 
@@ -106,8 +107,26 @@ public class ReverseProxy implements MuHandler {
             DeferredContentProvider targetReqBody = new DeferredContentProvider();
             asyncHandle.setReadListener(new RequestBodyListener() {
                 @Override
-                public void onDataReceived(ByteBuffer buffer) {
-                    targetReqBody.offer(buffer);
+                public void onDataReceived(ByteBuffer buffer, DoneCallback done) {
+                    targetReqBody.offer(buffer, new Callback() {
+                        @Override
+                        public void succeeded() {
+                            try {
+                                done.onComplete(null);
+                            } catch (Exception e) {
+                                throw new RuntimeException("onComplete(null) failed", e);
+                            }
+                        }
+
+                        @Override
+                        public void failed(Throwable x) {
+                            try {
+                                done.onComplete(x);
+                            } catch (Exception e) {
+                                throw new RuntimeException("onComplete(Throwable) failed", e);
+                            }
+                        }
+                    });
                 }
 
                 @Override
@@ -145,16 +164,12 @@ public class ReverseProxy implements MuHandler {
                 }
             }
         });
-        targetReq.onResponseContentAsync((response, content, callback) -> asyncHandle.write(content,
-            new WriteCallback() {
-                @Override
-                public void onFailure(Throwable reason) {
-                    callback.failed(reason);
-                }
-
-                @Override
-                public void onSuccess() {
+        targetReq.onResponseContentAsync((response, content, callback) ->
+            asyncHandle.write(content, error -> {
+                if (error == null) {
                     callback.succeeded();
+                } else {
+                    callback.failed(error);
                 }
             }));
         targetReq.timeout(totalTimeoutInMillis, TimeUnit.MILLISECONDS);
@@ -202,11 +217,12 @@ public class ReverseProxy implements MuHandler {
 
     /**
      * Copies headers from the clientRequest to the targetRequest, removing any Hop-By-Hop headers and adding Forwarded headers.
-     * @param clientRequest The original Mu request to copy headers from.
-     * @param targetRequest A Jetty request to copy the headers to.
+     *
+     * @param clientRequest                 The original Mu request to copy headers from.
+     * @param targetRequest                 A Jetty request to copy the headers to.
      * @param discardClientForwardedHeaders Set true to ignore Forwarded headers from the client request
-     * @param sendLegacyForwardedHeaders Set true to send X-Forwarded-* headers along with Forwarded headers
-     * @param viaValue The value to set on the Via header, for example <code>HTTP/1.1 myserver</code>
+     * @param sendLegacyForwardedHeaders    Set true to send X-Forwarded-* headers along with Forwarded headers
+     * @param viaValue                      The value to set on the Via header, for example <code>HTTP/1.1 myserver</code>
      * @return Returns true if the client request has a body; otherwise false.
      */
     public static boolean setRequestHeaders(MuRequest clientRequest, Request targetRequest, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders, String viaValue) {
@@ -246,10 +262,11 @@ public class ReverseProxy implements MuHandler {
 
     /**
      * Sets Forwarded and optionally X-Forwarded-* headers to the target request, based on the client request
-     * @param clientRequest the received client request
-     * @param targetRequest the target request to write the headers to
+     *
+     * @param clientRequest                 the received client request
+     * @param targetRequest                 the target request to write the headers to
      * @param discardClientForwardedHeaders if <code>true</code> then existing Forwarded headers on the client request will be discarded (normally false, unless you do not trust the upstream system)
-     * @param sendLegacyForwardedHeaders if <code>true</code> then X-Forwarded-Proto/Host/For headers will also be added
+     * @param sendLegacyForwardedHeaders    if <code>true</code> then X-Forwarded-Proto/Host/For headers will also be added
      */
     public static void setForwardedHeaders(MuRequest clientRequest, Request targetRequest, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders) {
         Mutils.notNull("clientRequest", clientRequest);
@@ -275,7 +292,8 @@ public class ReverseProxy implements MuHandler {
 
     /**
      * Sets X-Forwarded-Proto, X-Forwarded-Host and X-Forwarded-For on the request given the forwarded header.
-     * @param targetRequest The request to add the headers to
+     *
+     * @param targetRequest   The request to add the headers to
      * @param forwardedHeader The forwarded header that has the original client information on it.
      */
     private static void setXForwardedHeaders(Request targetRequest, ForwardedHeader forwardedHeader) {
@@ -287,6 +305,7 @@ public class ReverseProxy implements MuHandler {
     /**
      * Creates a Forwarded header for the based on the current request which can be used when
      * proxying the request to a target.
+     *
      * @param clientRequest The request from the client
      * @return A ForwardedHeader that can be added to a new request
      */

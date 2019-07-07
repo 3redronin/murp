@@ -1,4 +1,4 @@
-package io.muserver.murp;
+package scaffolding;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Request;

@@ -2,6 +2,9 @@ package io.muserver.murp;
 
 import io.muserver.*;
 import io.muserver.handlers.ResourceHandlerBuilder;
+import okhttp3.sse.EventSource;
+import okhttp3.sse.EventSourceListener;
+import okhttp3.sse.EventSources;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.client.api.Request;
@@ -11,6 +14,8 @@ import org.eclipse.jetty.http.HttpFields;
 import org.junit.AfterClass;
 import org.junit.Assume;
 import org.junit.Test;
+import scaffolding.ClientUtils;
+import scaffolding.StringUtils;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -19,23 +24,21 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
 import static io.muserver.Http2ConfigBuilder.http2EnabledIfAvailable;
 import static io.muserver.MuServerBuilder.httpServer;
 import static io.muserver.MuServerBuilder.httpsServer;
-import static io.muserver.murp.ClientUtils.call;
-import static io.muserver.murp.ClientUtils.request;
 import static io.muserver.murp.HttpClientBuilder.httpClient;
 import static io.muserver.murp.ReverseProxyBuilder.reverseProxy;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
+import static scaffolding.ClientUtils.call;
+import static scaffolding.ClientUtils.request;
 
 public class ReverseProxyTest {
 
@@ -142,6 +145,28 @@ public class ReverseProxyTest {
         assertThat(body, startsWith("The host header is " + reverseProxyServer.uri().getAuthority() +
             " and the Via header is [HTTP/1.1 blardorph] and forwarded is by="));
         assertThat(body, endsWith(";host=\"" + reverseProxyServer.uri().getAuthority() + "\";proto=http"));
+    }
+
+    @Test
+    public void itCanProxyPieceByPiece() throws InterruptedException, ExecutionException, TimeoutException {
+        String m1 = StringUtils.randomAsciiStringOfLength(20000);
+        String m2 = StringUtils.randomAsciiStringOfLength(120000);
+        String m3 = StringUtils.randomAsciiStringOfLength(20000);
+        MuServer targetServer = httpsServer()
+            .addHandler(Method.GET, "/", (req, resp, pp) -> {
+                resp.sendChunk(m1);
+                resp.sendChunk(m2);
+                resp.sendChunk(m3);
+            })
+            .start();
+
+        MuServer reverseProxyServer = httpServer()
+            .addHandler(reverseProxy().withUriMapper(UriMapper.toDomain(targetServer.uri())))
+            .start();
+
+        ContentResponse resp = client.GET(reverseProxyServer.uri().resolve("/"));
+        String body = resp.getContentAsString();
+        assertThat(body, equalTo(m1 + m2 + m3));
     }
 
     @Test
@@ -351,6 +376,57 @@ public class ReverseProxyTest {
             .header("X-Large", value)
             .send();
         assertThat(resp.getContentAsString(), equalTo(value));
+
+    }
+
+    @Test
+    public void sseIsPublishedOneMessageAtATime() throws Exception {
+        String m1 = "Message1";
+        String m2 = "<html>\t\n" + StringUtils.randomAsciiStringOfLength(120000) + "\n</html>";
+        CountDownLatch m1Latch = new CountDownLatch(1);
+        AtomicBoolean waited = new AtomicBoolean(false);
+        MuServer targetServer = httpServer()
+            .addHandler(Method.GET, "/", (req, resp, pp) -> {
+                SsePublisher publisher = SsePublisher.start(req, resp);
+                publisher.send(m1);
+                waited.set(m1Latch.await(20, TimeUnit.SECONDS));
+                publisher.send(m2);
+                publisher.close();
+            })
+            .start();
+
+        MuServer rp = httpServer()
+            .addHandler(reverseProxy().withUriMapper(UriMapper.toDomain(targetServer.uri())))
+            .start();
+
+
+        CountDownLatch messageReceivedLatch = new CountDownLatch(1);
+        CountDownLatch closedLatch = new CountDownLatch(1);
+        EventSource.Factory esf = EventSources.createFactory(ClientUtils.client);
+        List<String> received = new CopyOnWriteArrayList<>();
+        esf.newEventSource(request(rp.uri()).build(), new EventSourceListener() {
+            @Override
+            public void onEvent(EventSource eventSource, String id, String type, String data) {
+                received.add(data);
+                messageReceivedLatch.countDown();
+            }
+
+            @Override
+            public void onClosed(EventSource eventSource) {
+                closedLatch.countDown();
+            }
+
+            @Override
+            public void onFailure(EventSource eventSource, Throwable t, okhttp3.Response response) {
+                System.out.println("Error from sse = " + t);
+            }
+        });
+        assertThat(messageReceivedLatch.await(20, TimeUnit.SECONDS), is(true));
+
+        assertThat(received, contains(m1));
+        m1Latch.countDown();
+        assertThat(closedLatch.await(20, TimeUnit.SECONDS), is(true));
+        assertThat(received, contains(m1, m2));
 
     }
 

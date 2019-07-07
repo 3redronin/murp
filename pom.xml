@@ -6,7 +6,7 @@
 
     <groupId>io.muserver</groupId>
     <artifactId>murp</artifactId>
-    <version>0.4-SNAPSHOT</version>
+    <version>0.5-SNAPSHOT</version>
     <url>https://github.com/3redronin/murp</url>
     <name>murp</name>
     <description>A reverse proxy handler for Mu Server</description>
@@ -64,7 +64,7 @@
         <dependency>
             <groupId>io.muserver</groupId>
             <artifactId>mu-server</artifactId>
-            <version>0.29.2</version>
+            <version>0.35.0</version>
         </dependency>
         <dependency>
             <groupId>org.eclipse.jetty</groupId>
@@ -103,7 +103,13 @@
         <dependency>
             <groupId>com.squareup.okhttp3</groupId>
             <artifactId>okhttp</artifactId>
-            <version>3.13.1</version>
+            <version>3.14.2</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>okhttp-sse</artifactId>
+            <version>3.14.2</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
