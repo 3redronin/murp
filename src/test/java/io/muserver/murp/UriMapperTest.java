@@ -47,6 +47,11 @@ public class UriMapperTest {
             }
 
             @Override
+            public long startTime() {
+                return System.currentTimeMillis();
+            }
+
+            @Override
             public Method method() {
                 return null;
             }
