@@ -15,6 +15,7 @@ import org.junit.AfterClass;
 import org.junit.Assume;
 import org.junit.Test;
 import scaffolding.ClientUtils;
+import scaffolding.RawClient;
 import scaffolding.StringUtils;
 
 import java.io.ByteArrayOutputStream;
@@ -39,6 +40,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
 import static scaffolding.ClientUtils.call;
 import static scaffolding.ClientUtils.request;
+import static scaffolding.MuAssert.assertEventually;
 
 public class ReverseProxyTest {
 
@@ -300,6 +302,37 @@ public class ReverseProxyTest {
         }
 
     }
+
+    @Test
+    public void cookiesSentOnMultipleHeadersAreConvertedToSingleLines() throws Exception {
+        MuServer targetServer = httpServer()
+            .addHandler(Method.GET, "/", (request, response, pp) -> {
+                response.write("START; " + request.cookies().stream().map(Cookie::toString)
+                    .sorted().collect(Collectors.joining("; "))
+                    + "; END");
+            })
+            .start();
+
+        MuServer rp = httpServer()
+            .addHandler(reverseProxy()
+                .withViaName("externalrp")
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+            )
+            .start();
+
+        try (RawClient rawClient = RawClient.create(rp.uri())
+            .sendStartLine("GET", "/")
+            .sendHeader("host", rp.uri().getAuthority())
+            .sendHeader("cookie", "cookie1=something")
+            .sendHeader("cookie", "cookie2=somethingelse")
+            .endHeaders()
+            .flushRequest()) {
+
+            assertEventually(rawClient::responseString, endsWith("END"));
+            assertThat(rawClient.responseString(), endsWith("START; cookie1=something; cookie2=somethingelse; END"));
+        }
+    }
+
 
     private void runIfJava9OrLater() {
         Assume.assumeThat("This test runs only on java 9 an later", System.getProperty("java.specification.version"), not(equalTo("1.8")));
