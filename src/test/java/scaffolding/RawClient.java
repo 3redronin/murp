@@ -1,7 +1,5 @@
 package scaffolding;
 
-import io.netty.util.concurrent.DefaultThreadFactory;
-
 import java.io.*;
 import java.net.Socket;
 import java.net.URI;
@@ -13,7 +11,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 public class RawClient implements Closeable {
-    private static final ExecutorService executorService = Executors.newCachedThreadPool(new DefaultThreadFactory("raw-client"));
+    private static final ExecutorService executorService = Executors.newCachedThreadPool();
 
     private final ByteArrayOutputStream baos = new ByteArrayOutputStream();
     private BufferedOutputStream request;
