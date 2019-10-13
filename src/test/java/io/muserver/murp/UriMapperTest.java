@@ -8,7 +8,6 @@ import java.io.InputStream;
 import java.net.URI;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertThat;
@@ -122,7 +121,7 @@ public class UriMapperTest {
             }
 
             @Override
-            public Set<Cookie> cookies() {
+            public List<Cookie> cookies() {
                 return null;
             }
 
