@@ -9,17 +9,21 @@ import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.client.api.Request;
 import org.eclipse.jetty.client.api.Response;
+import org.eclipse.jetty.client.api.Result;
+import org.eclipse.jetty.client.util.DeferredContentProvider;
 import org.eclipse.jetty.client.util.StringContentProvider;
 import org.eclipse.jetty.http.HttpFields;
 import org.junit.AfterClass;
 import org.junit.Assume;
 import org.junit.Test;
 import scaffolding.ClientUtils;
+import scaffolding.MuAssert;
 import scaffolding.RawClient;
 import scaffolding.StringUtils;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -27,6 +31,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
@@ -462,6 +467,42 @@ public class ReverseProxyTest {
         assertThat(received, contains(m1, m2));
 
     }
+
+    @Test
+    public void streamedRequestBodiesWork() throws Exception {
+        StringBuilder received = new StringBuilder();
+        MuServer targetServer = httpServer()
+            .addHandler(Method.POST, "/", (req, resp, pp) -> {
+                received.append(req.readBodyAsString());
+            })
+            .start();
+
+        MuServer rp = httpsServer()
+            .addHandler(reverseProxy().withUriMapper(UriMapper.toDomain(targetServer.uri())))
+            .start();
+
+        DeferredContentProvider requestBodyProvider = new DeferredContentProvider();
+
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<Response> resp = new AtomicReference<>();
+        client.newRequest(rp.uri().resolve("/"))
+            .method("POST")
+            .content(requestBodyProvider)
+            .send(new Response.Listener.Adapter() {
+                @Override
+                public void onComplete(Result result) {
+                    latch.countDown();
+                }
+            });
+        requestBodyProvider.offer(ByteBuffer.wrap("The".getBytes(UTF_8)));
+        requestBodyProvider.flush();
+        requestBodyProvider.offer(ByteBuffer.wrap(" sent value".getBytes(UTF_8)));
+        requestBodyProvider.flush();
+        requestBodyProvider.close();
+        MuAssert.assertNotTimedOut("Waiting for completion", latch);
+        assertThat(received.toString(), is("The sent value"));
+    }
+
 
     private String largeRandomString() {
         StringBuilder sb = new StringBuilder();
