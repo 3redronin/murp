@@ -239,10 +239,10 @@ public class ReverseProxy implements MuHandler {
         for (Map.Entry<String, String> clientHeader : reqHeaders) {
             String key = clientHeader.getKey();
             String lowKey = key.toLowerCase();
+            hasContentLengthOrTransferEncoding |= lowKey.equals("content-length") || lowKey.equals("transfer-encoding");
             if (excludedHeaders.contains(lowKey) || customHopByHop.contains(lowKey)) {
                 continue;
             }
-            hasContentLengthOrTransferEncoding |= lowKey.equals("content-length") || lowKey.equals("transfer-encoding");
             targetRequest.header(key, clientHeader.getValue());
         }
 
