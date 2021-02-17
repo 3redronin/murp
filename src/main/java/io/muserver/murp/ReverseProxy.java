@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static io.muserver.Mutils.toByteBuffer;
 import static java.util.Arrays.asList;
 
 public class ReverseProxy implements MuHandler {
@@ -189,10 +190,10 @@ public class ReverseProxy implements MuHandler {
                         clientResp.contentType(ContentTypes.TEXT_HTML);
                         if (result.getFailure() instanceof TimeoutException) {
                             clientResp.status(504);
-                            clientResp.write("<h1>504 Gateway Timeout</h1><p>The target did not respond in a timely manner. ErrorID=" + errorID + "</p>");
+                            asyncHandle.write(toByteBuffer("<h1>504 Gateway Timeout</h1><p>The target did not respond in a timely manner. ErrorID="+ errorID + "</p>"));
                         } else {
                             clientResp.status(502);
-                            clientResp.write("<h1>502 Bad Gateway</h1><p>ErrorID=" + errorID + "</p>");
+                            asyncHandle.write(toByteBuffer("<h1>502 Bad Gateway</h1><p>ErrorID=" + errorID + "</p>"+ errorID + "</p>"));
                         }
                     }
                 } else {
