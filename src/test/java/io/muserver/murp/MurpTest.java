@@ -1,6 +1,5 @@
 package io.muserver.murp;
 
-import org.junit.Assert;
 import org.junit.Test;
 
 import java.net.URI;
@@ -13,13 +12,13 @@ public class MurpTest {
 
     @Test
     public void canGetPathAndQueries() {
-        Assert.assertThat(Murp.pathAndQuery(URI.create("http://localhost/this/is/a%20path")),
+        assertThat(Murp.pathAndQuery(URI.create("http://localhost/this/is/a%20path")),
             equalTo("/this/is/a%20path"));
 
-        Assert.assertThat(Murp.pathAndQuery(URI.create("http://localhost/a%20path?a%20param=a%20value")),
+        assertThat(Murp.pathAndQuery(URI.create("http://localhost/a%20path?a%20param=a%20value")),
             equalTo("/a%20path?a%20param=a%20value"));
 
-        Assert.assertThat(Murp.pathAndQuery(URI.create("http://localhost/a%20path?")),
+        assertThat(Murp.pathAndQuery(URI.create("http://localhost/a%20path?")),
             equalTo("/a%20path?"));
     }
 

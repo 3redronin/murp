@@ -5,10 +5,10 @@ import io.muserver.MuServer;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.*;
+
+import java.io.EOFException;
+import java.util.concurrent.TimeUnit;
 
 import static io.muserver.MuServerBuilder.httpServer;
 import static io.muserver.MuServerBuilder.httpsServer;
@@ -18,7 +18,7 @@ import static org.hamcrest.Matchers.*;
 
 public class TimeoutsTest {
 
-    private static final HttpClient client = new HttpClient(new SslContextFactory(true));
+    private static final HttpClient client = new HttpClient(new SslContextFactory.Client(true));
     private MuServer targetServer;
     private MuServer reverseProxyServer;
 
@@ -37,22 +37,22 @@ public class TimeoutsTest {
         reverseProxyServer = httpsServer()
             .addHandler(reverseProxy()
                 .withUriMapper(UriMapper.toDomain(targetServer.uri()))
-                .withTotalTimeout(1)
+                .withTotalTimeout(10, TimeUnit.MILLISECONDS)
             )
             .start();
 
         ContentResponse resp = client.GET(reverseProxyServer.uri());
         assertThat(resp.getStatus(), is(504));
         assertThat(resp.getContentAsString(), containsString("504 Gateway Timeout"));
+        assertThat(resp.getContentAsString(), containsString("The target service took too long to respond"));
     }
 
     @Test
-    public void idleTimeoutCausesDisconnection() throws Exception {
+    public void idleTimeoutCauses504IfResponseNotStarted() throws Exception {
         targetServer = httpServer()
             .addHandler(Method.GET, "/",
                 (request, response, pathParams) -> {
-                    response.sendChunk("Hello");
-                    Thread.sleep(200);
+                    Thread.sleep(2000);
                     try {
                         response.sendChunk("Goodbye");
                     } catch (Exception ignored) {
@@ -63,14 +63,48 @@ public class TimeoutsTest {
         reverseProxyServer = httpsServer()
             .addHandler(reverseProxy()
                 .withUriMapper(UriMapper.toDomain(targetServer.uri()))
-                .withHttpClient(HttpClientBuilder.httpClient().withIdleTimeoutMillis(50))
+                .withIdleTimeout(50, TimeUnit.MILLISECONDS)
             )
             .start();
 
         ContentResponse resp = client.GET(reverseProxyServer.uri());
-        assertThat(resp.getStatus(), isOneOf(504, 200));
+        assertThat(resp.getStatus(), is(504));
+        assertThat(resp.getContentAsString(), containsString("504 Gateway Timeout"));
+        assertThat(resp.getContentAsString(), containsString("The target service took too long to respond"));
         assertThat(resp.getContentAsString(), not(containsString("Goodbye")));
     }
+
+
+    @Test
+    public void idleTimeoutCausesDisconnectionIfResponseAlreadyStarted() throws Exception {
+        targetServer = httpServer()
+            .addHandler(Method.GET, "/",
+                (request, response, pathParams) -> {
+                    response.sendChunk("Hello");
+                    Thread.sleep(2000);
+                    try {
+                        response.sendChunk("Goodbye");
+                    } catch (Exception ignored) {
+                    }
+                })
+            .start();
+
+        reverseProxyServer = httpsServer()
+            .addHandler(reverseProxy()
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                .withIdleTimeout(50, TimeUnit.MILLISECONDS)
+            )
+            .start();
+
+        try {
+            client.GET(reverseProxyServer.uri());
+            Assert.fail("This shouldn't work!");
+        } catch (Throwable e) {
+            assertThat(e.getCause(), instanceOf(EOFException.class));
+        }
+    }
+
+
 
     @After
     public void stopServers() {

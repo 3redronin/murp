@@ -1,10 +1,14 @@
 package io.muserver.murp;
 
+import io.muserver.MuException;
 import io.muserver.MuHandler;
 import io.muserver.MuHandlerBuilder;
 import io.muserver.Mutils;
-import org.eclipse.jetty.client.HttpClient;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 
+import javax.net.ssl.SSLException;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -17,18 +21,19 @@ import static java.util.Collections.emptyList;
 /**
  * A builder for creating a reverse proxy, which is a {@link MuHandler} that can be added to a Mu Server.
  */
-public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
+public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy>, Cloneable {
 
     private String viaName = "private";
-    private HttpClient httpClient;
     private UriMapper uriMapper;
     private boolean sendLegacyForwardedHeaders;
     private boolean discardClientForwardedHeaders;
     private long totalTimeoutInMillis = TimeUnit.MINUTES.toMillis(5);
+    private long idleTimeoutInMillis = TimeUnit.MINUTES.toMillis(2);
+    private long idleConnectionTimeoutInMillis = TimeUnit.MINUTES.toMillis(5);
     private List<ProxyCompleteListener> proxyCompleteListeners;
-    private Set<String> doNotProxyHeaders = new HashSet<>();
-    private RequestInterceptor requestInterceptor;
-    private ResponseInterceptor responseInterceptor;
+    private final Set<String> doNotProxyHeaders = new HashSet<>();
+    private ProxyRequestInterceptor requestInterceptor;
+    private ProxyResponseInterceptor responseInterceptor;
 
     /**
      * The name to add as the <code>Via</code> header, which defaults to <code>private</code>.
@@ -39,27 +44,6 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
         Mutils.notNull("viaName", viaName);
         this.viaName = viaName;
         return this;
-    }
-
-    /**
-     * Specifies the Jetty HTTP client to use to make the request to the target server. It's recommended
-     * you do not set this in order to use the default client that is optimised for reverse proxy usage.
-     * @param httpClient The HTTP client to use, or null to use the default client.
-     * @return This builder
-     */
-    public ReverseProxyBuilder withHttpClient(HttpClient httpClient) {
-        this.httpClient = httpClient;
-        return this;
-    }
-
-    /**
-     * Specifies the Jetty HTTP client to use to make the request to the target server. It's recommended
-     * you do not set this in order to use the default client that is optimised for reverse proxy usage.
-     * @param clientBuilder The HTTP client to use, or null to use the default client.
-     * @return This builder
-     */
-    public ReverseProxyBuilder withHttpClient(HttpClientBuilder clientBuilder) {
-        return withHttpClient(clientBuilder == null ? null : clientBuilder.build());
     }
 
     /**
@@ -119,25 +103,48 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
     }
 
     /**
-     * Sets the total request timeout in millis for a proxied request. Defaults to 5 minutes.
-     * @param totalTimeoutInMillis The allowed time in milliseconds for a request.
-     * @return This builder
-     */
-    public ReverseProxyBuilder withTotalTimeout(long totalTimeoutInMillis) {
-        this.totalTimeoutInMillis = totalTimeoutInMillis;
-        return this;
-    }
-
-    /**
-     * Sets the total request timeout in millis for a proxied request. Defaults to 5 minutes.
+     * Sets the total request timeout in millis for a proxied request.
+     * <p>If the full proxy request and response is not completed in this time, then a <code>504 Gateway Timeout</code>
+     * will be sent to the client (if the response hasn't already started) and the connection will be closed.</p>
+     * <p>Defaults to 5 minutes.</p>
      * @param totalTimeout The allowed time for a request.
      * @param unit The timeout unit.
      * @return This builder
      */
     public ReverseProxyBuilder withTotalTimeout(long totalTimeout, TimeUnit unit) {
-        return withTotalTimeout(unit.toMillis(totalTimeout));
+        this.totalTimeoutInMillis = unit.toMillis(totalTimeout);
+        return this;
     }
 
+    /**
+     * Sets the idle request timeout in millis for a proxied request.
+     * <p>If no data is sent over the connection in this time, then a <code>504 Gateway Timeout</code>
+     * will be sent to the client (if the response hasn't already started)
+     * and the connection will be closed.</p>
+     * <p>Defaults to 2 minutes.</p>
+     * @param idleTimeout The allowed time for a request.
+     * @param unit The timeout unit.
+     * @return This builder
+     */
+    public ReverseProxyBuilder withIdleTimeout(long idleTimeout, TimeUnit unit) {
+        this.idleTimeoutInMillis = unit.toMillis(idleTimeout);
+        return this;
+    }
+
+    /**
+     * For an HTTP connection in the connection pool that does not have an in-progress request, this controls the
+     * amount of time the connection will stay open for.
+     * <p>A larger number will mean it is more likely that there is an already-open connection available when a new
+     * request comes in, however this means more TCP connections (and so system resources) are potentially used.</p>
+     * <p>Defaults to 5 minutes.</p>
+     * @param idleTimeout The allowed time for a request.
+     * @param unit The timeout unit.
+     * @return This builder
+     */
+    public ReverseProxyBuilder withIdleConnectionTimeout(long idleTimeout, TimeUnit unit) {
+        this.idleConnectionTimeoutInMillis = unit.toMillis(idleTimeout);
+        return this;
+    }
     /**
      * Registers a proxy completion listener.
      * @param proxyCompleteListener A listener to be called when a proxy request is complete
@@ -157,7 +164,7 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
      * @param requestInterceptor An interceptor that may change the target request, or null to not have an interceptor.
      * @return This builder.
      */
-    public ReverseProxyBuilder withRequestInterceptor(RequestInterceptor requestInterceptor) {
+    public ReverseProxyBuilder withRequestInterceptor(ProxyRequestInterceptor requestInterceptor) {
         this.requestInterceptor = requestInterceptor;
         return this;
     }
@@ -168,7 +175,7 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
      * @param responseInterceptor An interceptor that may change the client response, or null to not have an interceptor.
      * @return This builder.
      */
-    public ReverseProxyBuilder withResponseInterceptor(ResponseInterceptor responseInterceptor) {
+    public ReverseProxyBuilder withResponseInterceptor(ProxyResponseInterceptor responseInterceptor) {
         this.responseInterceptor = responseInterceptor;
         return this;
     }
@@ -191,16 +198,60 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
         if (uriMapper == null) {
             throw new IllegalStateException("A URI mapper must be specified");
         }
-        HttpClient client = httpClient;
-        if (client == null) {
-            client = HttpClientBuilder.httpClient().build();
-        }
+
         List<ProxyCompleteListener> proxyCompleteListeners = this.proxyCompleteListeners;
         if (proxyCompleteListeners == null) {
             proxyCompleteListeners = emptyList();
         }
-        return new ReverseProxy(client, uriMapper, totalTimeoutInMillis, proxyCompleteListeners, viaName,
-            discardClientForwardedHeaders, sendLegacyForwardedHeaders, doNotProxyHeaders,
-            requestInterceptor, responseInterceptor);
+
+        SslContext sslCtx;
+        try {
+            sslCtx = SslContextBuilder.forClient()
+                .trustManager(InsecureTrustManagerFactory.INSTANCE)
+                .build();
+        } catch (SSLException e) {
+            throw new MuException("Error setting up SSL Context", e);
+        }
+
+        Set<String> dnp = new HashSet<>();
+        for (String header : this.doNotProxyHeaders) {
+            dnp.add(header.toLowerCase());
+        }
+        dnp.addAll(ReverseProxy.REPRESSED);
+
+        ProxySettings settings = new ProxySettings(viaName, uriMapper, sendLegacyForwardedHeaders, discardClientForwardedHeaders,
+            totalTimeoutInMillis, idleTimeoutInMillis, idleConnectionTimeoutInMillis, proxyCompleteListeners, dnp, requestInterceptor, responseInterceptor, sslCtx);
+        return new ReverseProxy(settings);
+    }
+
+}
+
+class ProxySettings {
+    final String viaName;
+    final UriMapper uriMapper;
+    final boolean sendLegacyForwardedHeaders;
+    final boolean discardClientForwardedHeaders;
+    final long totalTimeoutInMillis;
+    final long idleTimeoutInMillis;
+    final long idleConnectionTimeoutInMillis;
+    final List<ProxyCompleteListener> proxyCompleteListeners;
+    final Set<String> doNotProxyHeaders;
+    final ProxyRequestInterceptor requestInterceptor;
+    final ProxyResponseInterceptor responseInterceptor;
+    final SslContext sslCtx;
+
+    ProxySettings(String viaName, UriMapper uriMapper, boolean sendLegacyForwardedHeaders, boolean discardClientForwardedHeaders, long totalTimeoutInMillis, long idleTimeoutInMillis, long idleConnectionTimeoutInMillis, List<ProxyCompleteListener> proxyCompleteListeners, Set<String> doNotProxyHeaders, ProxyRequestInterceptor requestInterceptor, ProxyResponseInterceptor responseInterceptor, SslContext sslCtx) {
+        this.viaName = viaName;
+        this.uriMapper = uriMapper;
+        this.sendLegacyForwardedHeaders = sendLegacyForwardedHeaders;
+        this.discardClientForwardedHeaders = discardClientForwardedHeaders;
+        this.totalTimeoutInMillis = totalTimeoutInMillis;
+        this.idleTimeoutInMillis = idleTimeoutInMillis;
+        this.idleConnectionTimeoutInMillis = idleConnectionTimeoutInMillis;
+        this.proxyCompleteListeners = proxyCompleteListeners;
+        this.doNotProxyHeaders = doNotProxyHeaders;
+        this.requestInterceptor = requestInterceptor;
+        this.responseInterceptor = responseInterceptor;
+        this.sslCtx = sslCtx;
     }
 }

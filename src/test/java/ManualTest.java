@@ -30,8 +30,8 @@ public class ManualTest {
             .withHttpsPort(13443)
             .addHandler(
                 ReverseProxyBuilder.reverseProxy()
-                    .addProxyCompleteListener((clientRequest, clientResponse, targetUri, durationMillis) -> {
-                        System.out.println("Completed " + clientRequest + " in " + durationMillis + "ms");
+                    .addProxyCompleteListener(info -> {
+                        System.out.println("Completed " + info.clientRequest() + " in " + info.durationMillis() + "ms");
                     })
                     .withUriMapper(request -> {
                         String pathAndQuery = Murp.pathAndQuery(request.uri());

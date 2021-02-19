@@ -7,7 +7,6 @@ import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.api.Request;
 import org.eclipse.jetty.client.api.Response;
 import org.eclipse.jetty.client.api.Result;
 import org.eclipse.jetty.client.util.DeferredContentProvider;
@@ -31,14 +30,12 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
 import static io.muserver.Http2ConfigBuilder.http2EnabledIfAvailable;
 import static io.muserver.MuServerBuilder.httpServer;
 import static io.muserver.MuServerBuilder.httpsServer;
-import static io.muserver.murp.HttpClientBuilder.httpClient;
 import static io.muserver.murp.ReverseProxyBuilder.reverseProxy;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -73,8 +70,8 @@ public class ReverseProxyTest {
         MuServer reverseProxyServer = httpsServer()
             .addHandler(reverseProxy()
                 .withUriMapper(UriMapper.toDomain(targetServer.uri()))
-                .addProxyCompleteListener((clientRequest, clientResponse, target, durationMillis) -> {
-                    notifications.add("Did " + clientRequest.method() + " " + clientRequest.uri().getPath() + " and returned a " + clientResponse.status() + " from " + target);
+                .addProxyCompleteListener(info -> {
+                    notifications.add("Did " + info.clientRequest().method() + " " + info.clientRequest().uri().getPath() + " and returned a " + info.clientResponse().status() + " from " + info.targetUri());
                     notificationAddedLatch.countDown();
                 })
             )
@@ -133,6 +130,10 @@ public class ReverseProxyTest {
     @Test
     public void viaHeadersCanBeSet() throws Exception {
         MuServer targetServer = httpsServer()
+            .addHandler((req, resp) -> {
+                System.out.println("Got a request! " + req);
+                return false;
+            })
             .addHandler(Method.GET, "/", (req, resp, pp) -> resp.write(
                 "The host header is " + req.headers().get("Host") +
                     " and the Via header is "
@@ -156,10 +157,10 @@ public class ReverseProxyTest {
 
     @Test
     public void itCanProxyPieceByPiece() throws InterruptedException, ExecutionException, TimeoutException {
-        String m1 = StringUtils.randomAsciiStringOfLength(20000);
+        String m1 = ""; StringUtils.randomAsciiStringOfLength(20000);
         String m2 = StringUtils.randomAsciiStringOfLength(120000);
-        String m3 = StringUtils.randomAsciiStringOfLength(20000);
-        MuServer targetServer = httpsServer()
+        String m3 = "";StringUtils.randomAsciiStringOfLength(20000);
+        MuServer targetServer = httpServer()
             .addHandler(Method.GET, "/", (req, resp, pp) -> {
                 resp.sendChunk(m1);
                 resp.sendChunk(m2);
@@ -175,6 +176,24 @@ public class ReverseProxyTest {
         String body = resp.getContentAsString();
         assertThat(body, equalTo(m1 + m2 + m3));
     }
+
+    @Test
+    public void itCanProxySmallBodies() throws InterruptedException, ExecutionException, TimeoutException {
+        MuServer targetServer = httpServer()
+            .addHandler(Method.POST, "/", (req, resp, pp) -> {
+                resp.write(req.readBodyAsString());
+            })
+            .start();
+        MuServer reverseProxyServer = httpServer()
+            .addHandler(reverseProxy().withUriMapper(UriMapper.toDomain(targetServer.uri())))
+            .start();
+        ContentResponse resp = client.POST(reverseProxyServer.uri().resolve("/"))
+            .content(new StringContentProvider("1"))
+            .send();
+        assertThat(resp.getStatus(), is(200));
+        assertThat(resp.getContentAsString(), equalTo("1"));
+    }
+
 
     @Test
     public void theHostNameProxyingCanBeTurnedOff() throws InterruptedException, ExecutionException, TimeoutException {
@@ -262,8 +281,8 @@ public class ReverseProxyTest {
         try (okhttp3.Response resp = call(request(externalRP.uri().resolve("/")))) {
             assertThat(resp.code(), is(200));
             assertThat(resp.headers("date"), hasSize(1));
-            assertThat(resp.headers("via"), contains("HTTP/1.1 internalrp, HTTP/2 externalrp"));
-            assertThat(resp.body().string(), is("The Via header is [HTTP/2 externalrp, HTTP/1.1 internalrp]" +
+            assertThat(resp.headers("via"), contains("HTTP/1.1 internalrp, HTTP/2.0 externalrp"));
+            assertThat(resp.body().string(), is("The Via header is [HTTP/2.0 externalrp, HTTP/1.1 internalrp]" +
                 " and forwarded is https with host " + externalRP.uri().getAuthority() + ", http with host "
                 + externalRP.uri().getAuthority()));
         }
@@ -340,7 +359,7 @@ public class ReverseProxyTest {
 
 
     private void runIfJava9OrLater() {
-        Assume.assumeThat("This test runs only on java 9 an later", System.getProperty("java.specification.version"), not(equalTo("1.8")));
+        Assume.assumeThat("This test runs only on java 9 and later", System.getProperty("java.specification.version"), not(equalTo("1.8")));
     }
 
     @Test
@@ -357,20 +376,20 @@ public class ReverseProxyTest {
         MuServer reverseProxyServer = httpServer()
             .addHandler(reverseProxy()
                 .withUriMapper(UriMapper.toDomain(targetServer.uri()))
-                .withRequestInterceptor(new RequestInterceptor() {
+                .withRequestInterceptor(new ProxyRequestInterceptor() {
                     @Override
-                    public void intercept(MuRequest clientRequest, Request targetRequest) {
-                        clientRequest.attribute("blah", "blah-blah-blah");
-                        targetRequest.header("X-Blocked", null);
-                        targetRequest.header("X-Added", "I was added");
+                    public void intercept(ProxyRequestInfo info) {
+                        info.clientRequest().attribute("blah", "blah-blah-blah");
+                        info.targetRequestHeaders().remove("X-Blocked");
+                        info.targetRequestHeaders().add("X-Added", "I was added");
                     }
                 })
-                .withResponseInterceptor(new ResponseInterceptor() {
+                .withResponseInterceptor(new ProxyResponseInterceptor() {
                     @Override
-                    public void intercept(MuRequest clientRequest, Request targetRequest, Response targetResponse, MuResponse clientResponse) {
-                        clientResponse.status(400);
-                        Headers headers = clientResponse.headers();
-                        headers.set("X-Blah", clientRequest.attribute("blah"));
+                    public void intercept(ProxyResponseInfo info) {
+                        info.clientResponse().status(400);
+                        Headers headers = info.clientResponse().headers();
+                        headers.set("X-Blah", info.clientRequest().attribute("blah"));
                         headers.set("X-Added-By-Resp", "Added-by-resp");
                         headers.remove("X-Added-By-Target");
                     }
@@ -406,7 +425,6 @@ public class ReverseProxyTest {
             .withMaxHeadersSize(maxHeaderSize)
             .addHandler(reverseProxy()
                 .withUriMapper(UriMapper.toDomain(targetServer.uri()))
-                .withHttpClient(httpClient().withMaxRequestHeadersSize(maxHeaderSize))
             )
             .start();
 
@@ -481,26 +499,26 @@ public class ReverseProxyTest {
             .addHandler(reverseProxy().withUriMapper(UriMapper.toDomain(targetServer.uri())))
             .start();
 
-        DeferredContentProvider requestBodyProvider = new DeferredContentProvider();
-
-        CountDownLatch latch = new CountDownLatch(1);
-        AtomicReference<Response> resp = new AtomicReference<>();
-        client.newRequest(rp.uri().resolve("/"))
-            .method("POST")
-            .content(requestBodyProvider)
-            .send(new Response.Listener.Adapter() {
-                @Override
-                public void onComplete(Result result) {
-                    latch.countDown();
-                }
-            });
-        requestBodyProvider.offer(ByteBuffer.wrap("The".getBytes(UTF_8)));
-        requestBodyProvider.flush();
-        requestBodyProvider.offer(ByteBuffer.wrap(" sent value".getBytes(UTF_8)));
-        requestBodyProvider.flush();
-        requestBodyProvider.close();
+        CountDownLatch latch;
+        try (DeferredContentProvider requestBodyProvider = new DeferredContentProvider()) {
+            latch = new CountDownLatch(1);
+            client.newRequest(rp.uri().resolve("/"))
+                .method("POST")
+                .content(requestBodyProvider)
+                .send(new Response.CompleteListener() {
+                    @Override
+                    public void onComplete(Result result) {
+                        System.out.println("client complete result = " + result);
+                        latch.countDown();
+                    }
+                });
+            requestBodyProvider.offer(ByteBuffer.wrap("The".getBytes(UTF_8)));
+            requestBodyProvider.flush();
+            requestBodyProvider.offer(ByteBuffer.wrap(" sent value".getBytes(UTF_8)));
+            requestBodyProvider.flush();
+        }
         MuAssert.assertNotTimedOut("Waiting for completion", latch);
-        assertThat(received.toString(), is("The sent value"));
+        assertEventually(received::toString, is("The sent value"));
     }
 
 
