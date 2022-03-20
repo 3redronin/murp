@@ -30,6 +30,8 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy>, Clon
     private long totalTimeoutInMillis = TimeUnit.MINUTES.toMillis(5);
     private long idleTimeoutInMillis = TimeUnit.MINUTES.toMillis(2);
     private long idleConnectionTimeoutInMillis = TimeUnit.MINUTES.toMillis(5);
+    private int maxConnectionsPerDestination = 64;
+    private int connectionTimeoutMillis = 20000;
     private List<ProxyCompleteListener> proxyCompleteListeners;
     private final Set<String> doNotProxyHeaders = new HashSet<>();
     private ProxyRequestInterceptor requestInterceptor;
@@ -115,6 +117,39 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy>, Clon
         this.totalTimeoutInMillis = unit.toMillis(totalTimeout);
         return this;
     }
+
+    /**
+     * Sets the maximum connection pool size for each destination.
+     * <p>Each target destination (i.e. each <code>scheme://host:port</code> combo) has a connection pool that starts
+     * with a single connection and grows up to this maximum size where needed (e.g. when concurrent requests are in progress).
+     * Note that the connection pool will reduce to an empty pool when connections are idle for the time specified
+     * by the {@link #withIdleConnectionTimeout(long, TimeUnit)} setting.</p>
+     * <p>Defaults to 64 connections.</p>
+     * @param maxConnectionsPerDestination The maximum number of idle connections
+     * @return This builder
+     */
+    public ReverseProxyBuilder withMaxConnectionsPerDestination(int maxConnectionsPerDestination) {
+        this.maxConnectionsPerDestination = maxConnectionsPerDestination;
+        return this;
+    }
+
+    /**
+     * Sets the connection timeout for when establishing a connection to a target server.
+     * <p>Defaults to 20 seconds.</p>
+     * @param connectionTimeout The allowed time for connecting to a target destination.
+     * @param unit The timeout unit.
+     * @return This builder
+     */
+    public ReverseProxyBuilder withConnectionTimeout(long connectionTimeout, TimeUnit unit) {
+        long millis = unit.toMillis(connectionTimeout);
+        if (millis >= Integer.MAX_VALUE) {
+            this.connectionTimeoutMillis = Integer.MAX_VALUE;
+        } else {
+            this.connectionTimeoutMillis = (int)millis;
+        }
+        return this;
+    }
+
 
     /**
      * Sets the idle request timeout in millis for a proxied request.
@@ -220,7 +255,8 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy>, Clon
         dnp.addAll(ReverseProxy.REPRESSED);
 
         ProxySettings settings = new ProxySettings(viaName, uriMapper, sendLegacyForwardedHeaders, discardClientForwardedHeaders,
-            totalTimeoutInMillis, idleTimeoutInMillis, idleConnectionTimeoutInMillis, proxyCompleteListeners, dnp, requestInterceptor, responseInterceptor, sslCtx);
+            totalTimeoutInMillis, idleTimeoutInMillis, idleConnectionTimeoutInMillis, proxyCompleteListeners, dnp,
+            requestInterceptor, responseInterceptor, sslCtx, connectionTimeoutMillis, maxConnectionsPerDestination);
         return new ReverseProxy(settings);
     }
 
@@ -239,8 +275,10 @@ class ProxySettings {
     final ProxyRequestInterceptor requestInterceptor;
     final ProxyResponseInterceptor responseInterceptor;
     final SslContext sslCtx;
+    final int connectionTimeoutMillis;
+    final int maxConnectionsPerDestination;
 
-    ProxySettings(String viaName, UriMapper uriMapper, boolean sendLegacyForwardedHeaders, boolean discardClientForwardedHeaders, long totalTimeoutInMillis, long idleTimeoutInMillis, long idleConnectionTimeoutInMillis, List<ProxyCompleteListener> proxyCompleteListeners, Set<String> doNotProxyHeaders, ProxyRequestInterceptor requestInterceptor, ProxyResponseInterceptor responseInterceptor, SslContext sslCtx) {
+    ProxySettings(String viaName, UriMapper uriMapper, boolean sendLegacyForwardedHeaders, boolean discardClientForwardedHeaders, long totalTimeoutInMillis, long idleTimeoutInMillis, long idleConnectionTimeoutInMillis, List<ProxyCompleteListener> proxyCompleteListeners, Set<String> doNotProxyHeaders, ProxyRequestInterceptor requestInterceptor, ProxyResponseInterceptor responseInterceptor, SslContext sslCtx, int connectionTimeoutMillis, int maxConnectionsPerDestination) {
         this.viaName = viaName;
         this.uriMapper = uriMapper;
         this.sendLegacyForwardedHeaders = sendLegacyForwardedHeaders;
@@ -253,5 +291,7 @@ class ProxySettings {
         this.requestInterceptor = requestInterceptor;
         this.responseInterceptor = responseInterceptor;
         this.sslCtx = sslCtx;
+        this.connectionTimeoutMillis = connectionTimeoutMillis;
+        this.maxConnectionsPerDestination = maxConnectionsPerDestination;
     }
 }

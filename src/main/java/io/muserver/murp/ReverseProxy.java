@@ -1,14 +1,11 @@
 package io.muserver.murp;
 
 import io.muserver.*;
-import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import io.netty.channel.*;
-import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.channel.ChannelDuplexHandler;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http.*;
-import io.netty.handler.flow.FlowControlHandler;
 import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import io.netty.util.AsciiString;
 import io.netty.util.concurrent.ScheduledFuture;
@@ -17,10 +14,14 @@ import org.slf4j.LoggerFactory;
 
 import javax.ws.rs.NotAllowedException;
 import javax.ws.rs.ServerErrorException;
+import java.io.Closeable;
+import java.io.IOException;
 import java.net.InetAddress;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.*;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -28,7 +29,7 @@ import java.util.stream.Collectors;
 
 import static java.util.Arrays.asList;
 
-public class ReverseProxy implements MuHandler {
+public class ReverseProxy implements MuHandler, Closeable {
     private static final Logger log = LoggerFactory.getLogger(ReverseProxy.class);
     private static final AsciiString FORWARDED = AsciiString.cached("forwarded");
     private static final AsciiString X_FORWARDED_PROTO = AsciiString.cached("x_forwarded_proto");
@@ -67,16 +68,16 @@ public class ReverseProxy implements MuHandler {
 
     private final AtomicLong counter = new AtomicLong();
     private static final String ipAddress;
-    private final Bootstrap clientBootstrap;
     private final ProxySettings settings;
-
+    private final ProxyConnectionPool pool;
 
     ReverseProxy(ProxySettings settings) {
         this.settings = settings;
-        EventLoopGroup group = new NioEventLoopGroup();
-        clientBootstrap = new Bootstrap()
-            .group(group)
-            .channel(NioSocketChannel.class);
+        this.pool = new ProxyConnectionPool(settings);
+    }
+
+    public int poolSize(URI destination) {
+        return pool.poolSize(destination);
     }
 
     @Override
@@ -92,7 +93,7 @@ public class ReverseProxy implements MuHandler {
         }
 
 
-        clientResp.headers().remove(HeaderNames.DATE); // so that the target's date can be used
+
 
         final AsyncHandle asyncHandle = clientReq.handleAsync();
         final long id = counter.incrementAndGet();
@@ -101,38 +102,17 @@ public class ReverseProxy implements MuHandler {
         }
 
 
-        ProxyConnection mc = new ProxyConnection(settings);
-        clientBootstrap.clone()
-            .handler(new ChannelInitializer<Channel>() {
-                @Override
-                protected void initChannel(Channel ch) throws Exception {
-                    ChannelPipeline p = ch.pipeline();
-                    if (target.getScheme().equals("https")) {
-                        p.addLast("ssl", settings.sslCtx.newHandler(ch.alloc()));
-                    }
-                    MuServer settings = clientReq.server();
-                    p.addLast("codec", new HttpClientCodec(settings.maxUrlSize() + 17, settings.maxRequestHeadersSize(), HttpObjectDecoder.DEFAULT_MAX_CHUNK_SIZE));
-                    p.addLast("cfc", new FlowControlHandler()); // TODO: confirm this is needed
-                    p.addLast("murp", mc);
-                }
-            })
-            .connect(target.getHost(), target.getPort())
-            .addListener(f -> {
-                if (f.isSuccess()) {
-                    try {
-                        log.info("Connected! Target is " + target);
+        CompletionStage<ProxyConnection> connection = pool.getConnection(target, clientReq.server().maxUrlSize(), clientReq.server().maxRequestHeadersSize());
+        connection.whenComplete((pc, throwable) -> {
+            if (pc != null) {
+                String viaValue = clientReq.protocol() + " " + settings.viaName;
+                ProxyExchange exchange = new ProxyExchange(clientReq, clientResp, asyncHandle, target, targetMethod, viaValue, settings.idleTimeoutInMillis);
+                pc.sendRequestToTarget(exchange);
+            } else {
+                asyncHandle.complete(new ServerErrorException("Error connecting to target", 502));
+            }
+        });
 
-                        String viaValue = clientReq.protocol() + " " + settings.viaName;
-                        mc.sendRequestToTarget(new ProxyExchange(clientReq, clientResp, asyncHandle, target, targetMethod, viaValue, settings.idleTimeoutInMillis));
-
-                    } catch (Exception e) {
-                        log.error("Error preparing request", e);
-                    }
-
-                } else {
-                    log.error("Connect error", f.cause());
-                }
-            });
 
 //                    String errorID = UUID.randomUUID().toString();
 //                    if (log.isDebugEnabled()) {
@@ -267,6 +247,17 @@ public class ReverseProxy implements MuHandler {
         }
         return customHopByHop;
     }
+
+    @Override
+    public void close() throws IOException {
+        try {
+            pool.shutdown().get();
+        } catch (InterruptedException e) {
+            // allow it
+        } catch (ExecutionException e) {
+            throw new IOException("Error shutting down reverse proxy connection pool", e.getCause());
+        }
+    }
 }
 
 class ProxyExchange {
@@ -337,7 +328,6 @@ class ProxyExchange {
 
     void restartIdleTimer(ChannelHandlerContext ctx) {
         cancelTimer(idleTimeoutTimer);
-        log.info("Setting idle timeout for " + idleTimeoutMillis + "ms");
         idleTimeoutTimer = ctx.executor().schedule(this::onTimeout, idleTimeoutMillis, TimeUnit.MILLISECONDS);
     }
 
@@ -348,7 +338,6 @@ class ProxyExchange {
 
     private ScheduledFuture<?> cancelTimer(ScheduledFuture<?> current) {
         if (current != null) {
-            log.info("Cancelling idle timeout");
             current.cancel(true);
         }
         return null;
@@ -371,17 +360,22 @@ enum ProxyExchangeState {
 class ProxyConnection extends ChannelDuplexHandler {
     private static final Logger log = LoggerFactory.getLogger(ProxyConnection.class);
     private final long start = System.currentTimeMillis();
-    private ChannelHandlerContext ctx;
+    ChannelHandlerContext ctx;
     private final ProxySettings settings;
     private volatile ProxyExchange curExchange;
+    long connectionTimeMillis = -1;
+    private final ProxyConnectionListener readyToUseListener;
+    private final ProxyConnectionListener connectionClosedListener;
+    private ScheduledFuture<?> idleConnectionTimeout;
 
-    public ProxyConnection(ProxySettings settings) {
+    public ProxyConnection(ProxySettings settings, ProxyConnectionListener readyToUseListener, ProxyConnectionListener connectionClosedListener) {
         this.settings = settings;
+        this.readyToUseListener = readyToUseListener;
+        this.connectionClosedListener = connectionClosedListener;
     }
 
     @Override
     public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
-        log.info("handlerAdded");
         super.handlerAdded(ctx);
         this.ctx = ctx;
         ctx.channel().config().setAutoRead(false);
@@ -389,12 +383,19 @@ class ProxyConnection extends ChannelDuplexHandler {
 
     @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
-        log.info("channel active!");
-        ctx.channel().read();
+        connectionTimeMillis = System.currentTimeMillis() - start;
         super.channelActive(ctx);
     }
 
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        super.channelInactive(ctx);
+        cancelTimers();
+        connectionClosedListener.accept(ctx, this);
+    }
+
     void sendRequestToTarget(ProxyExchange exchange) {
+        cancelTimers();
         curExchange = exchange;
         exchange.setState(ProxyExchangeState.IN_PROGRESS);
         exchange.setTimeoutListener(e -> onCompleted(exchange, e, ProxyExchangeState.TIMED_OUT));
@@ -436,12 +437,19 @@ class ProxyConnection extends ChannelDuplexHandler {
 
                 @Override
                 public void onError(Throwable t) {
-                    // TODO: throw it so the channel picks it up;
+                    ctx.fireExceptionCaught(t); // TODO test this
                 }
             });
         }
-        ctx.writeAndFlush(targetRequest).addListener(f1 -> log.info("Sent first thing: " + f1));
+        ctx.writeAndFlush(targetRequest);
         exchange.restartIdleTimer(ctx);
+        ctx.channel().read();
+    }
+
+    private void cancelTimers() {
+        if (idleConnectionTimeout != null) {
+            idleConnectionTimeout.cancel(false);
+        }
     }
 
 
@@ -454,7 +462,6 @@ class ProxyConnection extends ChannelDuplexHandler {
             return;
         }
         ce.restartIdleTimer(ctx);
-        log.info("Got message " + msg);
         if (msg instanceof HttpResponse) {
             HttpResponse targetResp = (HttpResponse) msg;
 
@@ -475,10 +482,8 @@ class ProxyConnection extends ChannelDuplexHandler {
             HttpContent content = (HttpContent) msg;
             boolean isLast = msg instanceof LastHttpContent;
             ByteBuf bb = content.content();
-            log.info("Received back " + bb.readableBytes() + " bytes - now " + rec.addAndGet(bb.readableBytes()));
             if (bb.readableBytes() > 0) {
                 ce.asyncHandle.write(bb.nioBuffer(), error -> {
-                    log.info("Wrote some content! " + error);
                     if (isLast) {
                         onCompleted(ce, null, ProxyExchangeState.COMPLETED);
                     } else {
@@ -511,7 +516,6 @@ class ProxyConnection extends ChannelDuplexHandler {
 
     private void onCompleted(ProxyExchange exchange, Throwable error, ProxyExchangeState newState) {
         if (!ctx.executor().inEventLoop()) {
-            log.info("Marshalling onCompleted(" + newState + ") to event loop");
             ctx.executor().execute(() -> onCompleted(exchange, error, newState));
             return;
         }
@@ -523,15 +527,22 @@ class ProxyConnection extends ChannelDuplexHandler {
         exchange.setState(newState);
         exchange.asyncHandle.complete(error);
         raiseProxyCompleteEvent(exchange);
-        if (newState != ProxyExchangeState.COMPLETED) {
+        if (newState == ProxyExchangeState.COMPLETED) {
+            this.idleConnectionTimeout = ctx.executor().schedule(this::onIdleConnectionTimeout, settings.idleConnectionTimeoutInMillis, TimeUnit.MILLISECONDS);
+            readyToUseListener.accept(ctx, this);
+        } else {
             ctx.channel().close(); // i.e. cancel the in-progress request between this reverse proxy server and the target server (even if the connection to the client may be fine and still open)
         }
     }
 
-    AtomicLong rec = new AtomicLong();
+    private void onIdleConnectionTimeout() {
+        log.info("Connection pool timeout for connection");
+        ctx.channel().close();
+    }
 
     private void setClientResponseHeaders(HttpResponse targetResp, ProxyExchange exchange) {
         HttpHeaders targetRespHeaders = targetResp.headers();
+        targetRespHeaders.remove(HeaderNames.DATE); // so that the target's date can be used
         List<String> customHopByHopHeaders = ReverseProxy.getCustomHopByHopHeaders(targetRespHeaders.get(HttpHeaderNames.CONNECTION));
         Iterator<Map.Entry<String, String>> it = targetRespHeaders.iteratorAsString();
         while (it.hasNext()) {
@@ -559,7 +570,7 @@ class ProxyConnection extends ChannelDuplexHandler {
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
         if (evt instanceof SslHandshakeCompletionEvent) {
             SslHandshakeCompletionEvent shce = (SslHandshakeCompletionEvent) evt;
-
+            // TODO: why was I checking for this?
         }
         log.info("Got user event! " + evt);
         super.userEventTriggered(ctx, evt);
