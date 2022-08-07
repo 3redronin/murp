@@ -10,14 +10,14 @@ Add the latest dependencies...
 
 ````xml
 <dependency>
-    <groupId>io.muserver</groupId>
-    <artifactId>mu-server</artifactId>
-    <version>RELEASE</version>
+    <groupId>io.muserver</groupId>
+    <artifactId>mu-server</artifactId>
+    <version>RELEASE</version>
 </dependency>
 <dependency>
-    <groupId>io.muserver</groupId>
-    <artifactId>murp</artifactId>
-    <version>RELEASE</version>
+    <groupId>io.muserver</groupId>
+    <artifactId>murp</artifactId>
+    <version>RELEASE</version>
 </dependency>
 ````
 

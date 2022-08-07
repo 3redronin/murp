@@ -152,6 +152,11 @@ public class MockMuRequest implements MuRequest {
     }
 
     @Override
+    public String clientIP() {
+        return null;
+    }
+
+    @Override
     public MuServer server() {
         return null;
     }
