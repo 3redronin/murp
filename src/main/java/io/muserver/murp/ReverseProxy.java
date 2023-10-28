@@ -22,6 +22,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import static io.muserver.Mutils.toByteBuffer;
 import static java.util.Arrays.asList;
 
+/**
+ * The core implementation for ReverseProxy
+ */
 public class ReverseProxy implements MuHandler {
     private static final Logger log = LoggerFactory.getLogger(ReverseProxy.class);
 
