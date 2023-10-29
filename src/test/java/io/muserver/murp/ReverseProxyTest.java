@@ -5,15 +5,8 @@ import io.muserver.handlers.ResourceHandlerBuilder;
 import okhttp3.sse.EventSource;
 import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
-import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.client.api.Request;
 import org.eclipse.jetty.client.api.Response;
-import org.eclipse.jetty.client.api.Result;
-import org.eclipse.jetty.client.util.DeferredContentProvider;
-import org.eclipse.jetty.client.util.StringContentProvider;
-import org.eclipse.jetty.http.HttpFields;
-import org.junit.AfterClass;
 import org.junit.Assume;
 import org.junit.Test;
 import scaffolding.ClientUtils;
@@ -22,8 +15,14 @@ import scaffolding.RawClient;
 import scaffolding.StringUtils;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -31,7 +30,6 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
@@ -49,8 +47,8 @@ import static scaffolding.MuAssert.assertEventually;
 
 public class ReverseProxyTest {
 
-    private static final HttpClient client = HttpClientBuilder.httpClient()
-        .withMaxRequestHeadersSize(32768)
+    private static final HttpClient client = HttpUtils.createHttpClientBuilder(true)
+        .followRedirects(HttpClient.Redirect.NEVER)
         .build();
 
 
@@ -82,21 +80,23 @@ public class ReverseProxyTest {
 
         String requestBody = largeRandomString();
 
-        ContentResponse someText = client.POST(reverseProxyServer.uri().resolve("/some-text"))
+        HttpResponse<String> someText = client.send(HttpRequest.newBuilder()
+            .method("POST", HttpRequest.BodyPublishers.ofString(requestBody))
+            .uri(reverseProxyServer.uri().resolve("/some-text"))
             .header("Connection", "Keep-Alive, Foo, Bar")
             .header("foo", "abc")
             .header("Foo", "def")
             .header("Keep-Alive", "timeout=30")
-            .content(new StringContentProvider(requestBody))
-            .send();
-        assertThat(someText.getStatus(), is(201));
-        HttpFields headers = someText.getHeaders();
-        assertThat(headers.get("X-Something"), is("a header value"));
-        assertThat(headers.get("X-Received"), is("Foo: []"));
-        assertThat(headers.get("Content-Length"), is(notNullValue()));
-        assertThat(headers.get("Via"), is("HTTP/1.1 private"));
-        assertThat(headers.get("Forwarded"), is(nullValue()));
-        assertThat(someText.getContentAsString(), is("Hello: " + requestBody));
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(someText.statusCode(), is(201));
+        HttpHeaders headers = someText.headers();
+        assertThat(headers.firstValue("X-Something").orElse(""), is("a header value"));
+        assertThat(headers.firstValue("X-Received").orElse(""), is("Foo: []"));
+        assertThat(headers.firstValue("Content-Length").orElse(""), is(notNullValue()));
+        assertThat(headers.firstValue("Via").orElse(""), is("HTTP/1.1 private"));
+        assertThat(headers.firstValue("Forwarded").isEmpty(), is(true));
+        assertThat(someText.body(), is("Hello: " + requestBody));
         assertThat("Timed out waiting for notification",
             notificationAddedLatch.await(10, TimeUnit.SECONDS), is(true));
         assertThat("Actual: " + notifications, notifications, contains("Did POST /some-text and returned a 201 from " + targetServer.uri().resolve("/some-text")));
@@ -146,16 +146,20 @@ public class ReverseProxyTest {
             )
             .start();
 
-        ContentResponse resp = client.GET(reverseProxyServer.uri().resolve("/"));
-        assertThat(resp.getHeaders().getCSV("Via", true), contains("HTTP/1.1 blardorph"));
-        String body = resp.getContentAsString();
+
+        HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/"))
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(resp.headers().firstValue("Via").get(), containsString("HTTP/1.1 blardorph"));
+        String body = resp.body();
         assertThat(body, startsWith("The host header is " + reverseProxyServer.uri().getAuthority() +
             " and the Via header is [HTTP/1.1 blardorph] and forwarded is by="));
         assertThat(body, endsWith(";host=\"" + reverseProxyServer.uri().getAuthority() + "\";proto=http"));
     }
 
     @Test
-    public void itCanProxyPieceByPiece() throws InterruptedException, ExecutionException, TimeoutException {
+    public void itCanProxyPieceByPiece() throws InterruptedException, ExecutionException, TimeoutException, IOException {
         String m1 = StringUtils.randomAsciiStringOfLength(20000);
         String m2 = StringUtils.randomAsciiStringOfLength(120000);
         String m3 = StringUtils.randomAsciiStringOfLength(20000);
@@ -171,13 +175,16 @@ public class ReverseProxyTest {
             .addHandler(reverseProxy().withUriMapper(UriMapper.toDomain(targetServer.uri())))
             .start();
 
-        ContentResponse resp = client.GET(reverseProxyServer.uri().resolve("/"));
-        String body = resp.getContentAsString();
-        assertThat(body, equalTo(m1 + m2 + m3));
+
+        HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/"))
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(resp.body(), equalTo(m1 + m2 + m3));
     }
 
     @Test
-    public void theHostNameProxyingCanBeTurnedOff() throws InterruptedException, ExecutionException, TimeoutException {
+    public void theHostNameProxyingCanBeTurnedOff() throws InterruptedException, ExecutionException, TimeoutException, IOException {
         MuServer targetServer = httpsServer()
             .addHandler(Method.GET, "/", (req, resp, pp) -> resp.write(
                 "The host header is " + req.headers().get("Host") +
@@ -193,9 +200,13 @@ public class ReverseProxyTest {
             )
             .start();
 
-        ContentResponse resp = client.GET(reverseProxyServer.uri().resolve("/"));
-        assertThat(resp.getHeaders().getCSV("Via", true), contains("HTTP/1.1 blardorph"));
-        String body = resp.getContentAsString();
+        HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/"))
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+
+        assertThat(resp.headers().allValues("Via"), contains("HTTP/1.1 blardorph"));
+        String body = resp.body();
         assertThat(body, startsWith("The host header is " + targetServer.uri().getAuthority() +
             " and the Via header is [HTTP/1.1 blardorph] and forwarded is by="));
         assertThat(body, endsWith(";host=\"" + reverseProxyServer.uri().getAuthority() + "\";proto=http"));
@@ -225,10 +236,13 @@ public class ReverseProxyTest {
             )
             .start();
 
-        ContentResponse resp = client.GET(externalRP.uri().resolve("/"));
-        assertThat(resp.getHeaders().getValuesList("Date"), hasSize(1));
-        assertThat(resp.getHeaders().getValuesList("Via"), contains("HTTP/1.1 internalrp, HTTP/1.1 externalrp"));
-        assertThat(resp.getContentAsString(), is("The Via header is [HTTP/1.1 externalrp, HTTP/1.1 internalrp]" +
+        HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
+            .uri(externalRP.uri().resolve("/"))
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(resp.headers().allValues("Date"), hasSize(1));
+        assertThat(resp.headers().allValues("Via"), contains("HTTP/1.1 internalrp, HTTP/1.1 externalrp"));
+        assertThat(resp.body(), is("The Via header is [HTTP/1.1 externalrp, HTTP/1.1 internalrp]" +
             " and forwarded is https with host " + externalRP.uri().getAuthority() + ", http with host "
             + externalRP.uri().getAuthority()));
     }
@@ -379,11 +393,16 @@ public class ReverseProxyTest {
             )
             .start();
 
-        ContentResponse resp = client.GET(reverseProxyServer.uri().resolve("/"));
-        assertThat(resp.getStatus(), is(400));
-        assertThat(resp.getHeaders().getValuesList("X-Added-By-Resp"), contains("Added-by-resp"));
-        assertThat(resp.getHeaders().getValuesList("X-Added-By-Target"), empty());
-        String body = resp.getContentAsString();
+
+        HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/"))
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+
+        assertThat(resp.statusCode(), is(400));
+        assertThat(resp.headers().allValues("X-Added-By-Resp"), contains("Added-by-resp"));
+        assertThat(resp.headers().allValues("X-Added-By-Target"), empty());
+        String body = resp.body();
         assertThat(body, equalTo("X-Blocked = null, X-Added = I was added"));
     }
 
@@ -410,10 +429,13 @@ public class ReverseProxyTest {
             )
             .start();
 
-        ContentResponse resp = client.newRequest(rp.uri().resolve("/"))
+
+        HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
+            .uri(rp.uri().resolve("/"))
             .header("X-Large", value)
-            .send();
-        assertThat(resp.getContentAsString(), equalTo(value));
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(resp.body(), equalTo(value));
 
     }
 
@@ -470,10 +492,12 @@ public class ReverseProxyTest {
 
     @Test
     public void streamedRequestBodiesWork() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
         StringBuilder received = new StringBuilder();
         MuServer targetServer = httpServer()
             .addHandler(Method.POST, "/", (req, resp, pp) -> {
                 received.append(req.readBodyAsString());
+                latch.countDown();
             })
             .start();
 
@@ -481,26 +505,30 @@ public class ReverseProxyTest {
             .addHandler(reverseProxy().withUriMapper(UriMapper.toDomain(targetServer.uri())))
             .start();
 
-        DeferredContentProvider requestBodyProvider = new DeferredContentProvider();
+        HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
+            .method("POST", HttpRequest.BodyPublishers.fromPublisher(subscriber -> {
+                ConcurrentLinkedDeque<String> toSent = new ConcurrentLinkedDeque<>(List.of("The", " sent value"));
+                subscriber.onSubscribe(new Flow.Subscription() {
+                    @Override
+                    public void request(long n) {
+                        if (!toSent.isEmpty()) {
+                            subscriber.onNext(ByteBuffer.wrap(toSent.poll().getBytes(StandardCharsets.UTF_8)));
+                        } else {
+                            subscriber.onComplete();
+                        }
+                    }
 
-        CountDownLatch latch = new CountDownLatch(1);
-        AtomicReference<Response> resp = new AtomicReference<>();
-        client.newRequest(rp.uri().resolve("/"))
-            .method("POST")
-            .content(requestBodyProvider)
-            .send(new Response.Listener.Adapter() {
-                @Override
-                public void onComplete(Result result) {
-                    latch.countDown();
-                }
-            });
-        requestBodyProvider.offer(ByteBuffer.wrap("The".getBytes(UTF_8)));
-        requestBodyProvider.flush();
-        requestBodyProvider.offer(ByteBuffer.wrap(" sent value".getBytes(UTF_8)));
-        requestBodyProvider.flush();
-        requestBodyProvider.close();
-        MuAssert.assertNotTimedOut("Waiting for completion", latch);
+                    @Override
+                    public void cancel() {
+                    }
+                });
+            }))
+            .uri(rp.uri().resolve("/"))
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        MuAssert.assertNotTimedOut("Waiting for completion", latch, 5, TimeUnit.SECONDS);
         assertThat(received.toString(), is("The sent value"));
+        assertThat(resp.statusCode(), is(200));
     }
 
 
@@ -510,11 +538,6 @@ public class ReverseProxyTest {
             sb.append(UUID.randomUUID()).append(" ");
         }
         return sb.toString();
-    }
-
-    @AfterClass
-    public static void stop() throws Exception {
-        client.stop();
     }
 
 }

@@ -1,13 +1,8 @@
 package io.muserver.murp;
 
-import io.muserver.*;
 import org.junit.Test;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.net.URI;
-import java.util.List;
-import java.util.Optional;
 
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertThat;
