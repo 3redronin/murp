@@ -15,7 +15,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 
-class HttpUtils {
+class HttpClientUtils {
 
     static final List<String> DISALLOWED_REQUEST_HEADERS;
     static {

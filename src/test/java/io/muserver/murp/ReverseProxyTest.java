@@ -5,8 +5,6 @@ import io.muserver.handlers.ResourceHandlerBuilder;
 import okhttp3.sse.EventSource;
 import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Response;
 import org.junit.Assume;
 import org.junit.Test;
 import scaffolding.ClientUtils;
@@ -36,7 +34,6 @@ import java.util.zip.GZIPInputStream;
 import static io.muserver.Http2ConfigBuilder.http2EnabledIfAvailable;
 import static io.muserver.MuServerBuilder.httpServer;
 import static io.muserver.MuServerBuilder.httpsServer;
-import static io.muserver.murp.HttpClientBuilder.httpClient;
 import static io.muserver.murp.ReverseProxyBuilder.reverseProxy;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -47,7 +44,7 @@ import static scaffolding.MuAssert.assertEventually;
 
 public class ReverseProxyTest {
 
-    private static final HttpClient client = HttpUtils.createHttpClientBuilder(true)
+    private static final HttpClient client = HttpClientUtils.createHttpClientBuilder(true)
         .followRedirects(HttpClient.Redirect.NEVER)
         .build();
 
@@ -371,23 +368,16 @@ public class ReverseProxyTest {
         MuServer reverseProxyServer = httpServer()
             .addHandler(reverseProxy()
                 .withUriMapper(UriMapper.toDomain(targetServer.uri()))
-                .withRequestInterceptor(new RequestInterceptor() {
-                    @Override
-                    public void intercept(MuRequest clientRequest, Request targetRequest) {
-                        clientRequest.attribute("blah", "blah-blah-blah");
-                        targetRequest.header("X-Blocked", null);
-                        targetRequest.header("X-Added", "I was added");
-                    }
+                .withRequestInterceptor((clientRequest, targetRequestBuilder) -> {
+                    clientRequest.attribute("blah", "blah-blah-blah");
+                    targetRequestBuilder.header("X-Added", "I was added");
                 })
-                .withResponseInterceptor(new ResponseInterceptor() {
-                    @Override
-                    public void intercept(MuRequest clientRequest, Request targetRequest, Response targetResponse, MuResponse clientResponse) {
-                        clientResponse.status(400);
-                        Headers headers = clientResponse.headers();
-                        headers.set("X-Blah", clientRequest.attribute("blah"));
-                        headers.set("X-Added-By-Resp", "Added-by-resp");
-                        headers.remove("X-Added-By-Target");
-                    }
+                .withResponseInterceptor((clientRequest, targetRequest, targetResponse, clientResponse) -> {
+                    clientResponse.status(400);
+                    Headers headers = clientResponse.headers();
+                    headers.set("X-Blah", clientRequest.attribute("blah"));
+                    headers.set("X-Added-By-Resp", "Added-by-resp");
+                    headers.remove("X-Added-By-Target");
                 })
                 .addProxyCompleteListener(new Slf4jResponseLogger())
             )
@@ -425,7 +415,7 @@ public class ReverseProxyTest {
             .withMaxHeadersSize(maxHeaderSize)
             .addHandler(reverseProxy()
                 .withUriMapper(UriMapper.toDomain(targetServer.uri()))
-                .withHttpClient(httpClient().withMaxRequestHeadersSize(maxHeaderSize))
+                .withHttpClient(HttpClientUtils.createHttpClientBuilder(true).followRedirects(HttpClient.Redirect.NEVER).build())
             )
             .start();
 

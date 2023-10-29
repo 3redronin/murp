@@ -2,8 +2,9 @@ package io.muserver.murp;
 
 import io.muserver.MuRequest;
 import io.muserver.MuResponse;
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Response;
+
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 
 /**
  * A hook for intercepting responses before they are sent back to the client.
@@ -17,12 +18,12 @@ public interface ResponseInterceptor {
      * will be streamed asynchronously to the client.</p>
      *
      * @param clientRequest  The original request from the client.
-     * @param targetRequest  The Jetty request that was sent to the target.
+     * @param targetRequest  The request that was sent to the target.
      * @param targetResponse The response received from the target server.
      * @param clientResponse The as-yet unsent response to the client. You can modify the response code, content
      *                       type and other headers, however you cannot alter the response body.
      * @throws Exception Any unhandled exceptions will be logged but will not stop the response being sent.
      */
-    void intercept(MuRequest clientRequest, Request targetRequest, Response targetResponse, MuResponse clientResponse) throws Exception;
+    void intercept(MuRequest clientRequest, HttpRequest targetRequest, HttpResponse<Void> targetResponse, MuResponse clientResponse) throws Exception;
 
 }

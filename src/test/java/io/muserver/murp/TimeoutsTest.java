@@ -8,6 +8,7 @@ import org.junit.Test;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Duration;
 
 import static io.muserver.MuServerBuilder.httpServer;
 import static io.muserver.MuServerBuilder.httpsServer;
@@ -17,7 +18,7 @@ import static org.hamcrest.Matchers.*;
 
 public class TimeoutsTest {
 
-    private static final java.net.http.HttpClient client = HttpUtils.createHttpClientBuilder(true)
+    private static final java.net.http.HttpClient client = HttpClientUtils.createHttpClientBuilder(true)
         .followRedirects(HttpClient.Redirect.NEVER)
         .build();
 
@@ -63,7 +64,10 @@ public class TimeoutsTest {
         reverseProxyServer = httpsServer()
             .addHandler(reverseProxy()
                 .withUriMapper(UriMapper.toDomain(targetServer.uri()))
-                .withHttpClient(HttpClientBuilder.httpClient().withIdleTimeoutMillis(50))
+                .withHttpClient(HttpClientUtils
+                        .createHttpClientBuilder(true)
+                        .connectTimeout(Duration.ofMillis(50))
+                        .build())
             )
             .start();
 
