@@ -19,8 +19,8 @@ import static org.hamcrest.Matchers.*;
 public class TimeoutsTest {
 
     private static final java.net.http.HttpClient client = HttpClientUtils.createHttpClientBuilder(true)
-        .followRedirects(HttpClient.Redirect.NEVER)
-        .build();
+            .followRedirects(HttpClient.Redirect.NEVER)
+            .build();
 
     private MuServer targetServer;
     private MuServer reverseProxyServer;
@@ -28,20 +28,20 @@ public class TimeoutsTest {
     @Test
     public void totalTimeoutCauses504() throws Exception {
         targetServer = httpServer()
-            .addHandler(Method.GET, "/",
-                (request, response, pathParams) -> Thread.sleep(200))
-            .start();
+                .addHandler(Method.GET, "/",
+                        (request, response, pathParams) -> Thread.sleep(200))
+                .start();
 
         reverseProxyServer = httpsServer()
-            .addHandler(reverseProxy()
-                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
-                .withTotalTimeout(1)
-            )
-            .start();
+                .addHandler(reverseProxy()
+                        .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                        .withTotalTimeout(1)
+                )
+                .start();
 
         HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
-            .uri(reverseProxyServer.uri())
-            .build(), HttpResponse.BodyHandlers.ofString());
+                .uri(reverseProxyServer.uri())
+                .build(), HttpResponse.BodyHandlers.ofString());
 
         assertThat(resp.statusCode(), is(504));
         assertThat(resp.body(), containsString("504 Gateway Timeout"));
@@ -50,30 +50,30 @@ public class TimeoutsTest {
     @Test
     public void idleTimeoutCausesDisconnection() throws Exception {
         targetServer = httpServer()
-            .addHandler(Method.GET, "/",
-                (request, response, pathParams) -> {
-                    response.sendChunk("Hello");
-                    Thread.sleep(200);
-                    try {
-                        response.sendChunk("Goodbye");
-                    } catch (Exception ignored) {
-                    }
-                })
-            .start();
+                .addHandler(Method.GET, "/",
+                        (request, response, pathParams) -> {
+                            response.sendChunk("Hello");
+                            Thread.sleep(200);
+                            try {
+                                response.sendChunk("Goodbye");
+                            } catch (Exception ignored) {
+                            }
+                        })
+                .start();
 
         reverseProxyServer = httpsServer()
-            .addHandler(reverseProxy()
-                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
-                .withHttpClient(HttpClientUtils
-                        .createHttpClientBuilder(true)
-                        .connectTimeout(Duration.ofMillis(50))
-                        .build())
-            )
-            .start();
+                .addHandler(reverseProxy()
+                        .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                        .withTotalTimeout(50)
+                        .withHttpClient(HttpClientUtils
+                                .createHttpClientBuilder(true)
+                                .build())
+                )
+                .start();
 
         HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
-            .uri(reverseProxyServer.uri())
-            .build(), HttpResponse.BodyHandlers.ofString());
+                .uri(reverseProxyServer.uri())
+                .build(), HttpResponse.BodyHandlers.ofString());
 
 
         assertThat(resp.statusCode(), isOneOf(504, 200));

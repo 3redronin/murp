@@ -11,10 +11,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentLinkedDeque;
-import java.util.concurrent.Flow;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -111,12 +108,22 @@ public class ReverseProxy implements MuHandler {
             if (error != null) {
                 log.warn("something wrong while handling client request " + clientRequest, error);
             }
+
+            if (error != null && !clientResponse.hasStartedSendingData()) {
+                final int status = (error instanceof TimeoutException) ? 504 : 500;
+                final String body = (error instanceof TimeoutException) ? "504 Gateway Timeout" : "500 Internal Server Error";
+                clientResponse.status(status);
+                asyncHandle.write(Mutils.toByteBuffer(body));
+            }
+
             if (!clientResponse.responseState().endState()) {
                 asyncHandle.complete();
             }
+
             CompletableFuture<HttpResponse<Void>> targetResponse = targetResponseFutureRef.get();
             if (targetResponse != null) {
                 targetResponse.cancel(true);
+                log.info("target request cancelled, uri={}", target);
             }
         };
 
@@ -153,8 +160,8 @@ public class ReverseProxy implements MuHandler {
                     asyncHandle.setReadListener(new RequestBodyListener() {
                         @Override
                         public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) throws Exception {
-                            subscriber.onNext(byteBuffer);
                             doneCallbacks.add(doneCallback);
+                            subscriber.onNext(byteBuffer);
                         }
 
                         @Override
@@ -257,8 +264,8 @@ public class ReverseProxy implements MuHandler {
 
                     @Override
                     public void onComplete() {
-                        asyncHandle.complete();
                         targetResponseFutureRef.set(null);
+                        asyncHandle.complete();
                     }
                 });
             }

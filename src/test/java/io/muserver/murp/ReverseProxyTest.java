@@ -270,13 +270,16 @@ public class ReverseProxyTest {
             )
             .start();
 
-        try (okhttp3.Response resp = call(request(externalRP.uri().resolve("/")))) {
-            assertThat(resp.code(), is(200));
-            assertThat(resp.headers("date"), hasSize(1));
-            assertThat(resp.headers("via"), contains("HTTP/1.1 internalrp, HTTP/2.0 externalrp"));
-            assertThat(resp.body().string(), is("The Via header is [HTTP/2.0 externalrp, HTTP/1.1 internalrp]" +
-                " and forwarded is https with host " + externalRP.uri().getAuthority() + ", http with host "
-                + externalRP.uri().getAuthority()));
+
+        for (int i = 0; i < 10; i++) {
+            try (okhttp3.Response resp = call(request(externalRP.uri().resolve("/")))) {
+                assertThat(resp.code(), is(200));
+                assertThat(resp.headers("date"), hasSize(1));
+                assertThat(resp.headers("via"), contains("HTTP/1.1 internalrp, HTTP/2.0 externalrp"));
+                assertThat(resp.body().string(), is("The Via header is [HTTP/2.0 externalrp, HTTP/1.1 internalrp]" +
+                        " and forwarded is https with host " + externalRP.uri().getAuthority() + ", http with host "
+                        + externalRP.uri().getAuthority()));
+            }
         }
     }
 
