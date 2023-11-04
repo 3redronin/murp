@@ -20,10 +20,6 @@ class HttpClientUtils {
     static final List<String> DISALLOWED_REQUEST_HEADERS;
     static {
 
-        if (Runtime.version().feature() < 12) {
-            throw new IllegalStateException("Please use jdk greater than 12 to allow restricted headers.");
-        }
-
         // Older JDK clients blocked headers they shouldn't. From JDK 12 these can be turned off
         // with a system property. See https://bugs.openjdk.java.net/browse/JDK-8213189
         // For JDK 11, any of "date", "from", "host", "origin", "referer", "via", "warning" will not be proxied.

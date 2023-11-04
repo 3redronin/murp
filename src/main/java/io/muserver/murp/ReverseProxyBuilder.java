@@ -3,6 +3,8 @@ package io.muserver.murp;
 import io.muserver.MuHandler;
 import io.muserver.MuHandlerBuilder;
 import io.muserver.Mutils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -11,13 +13,17 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
+import static io.muserver.murp.HttpClientUtils.createHttpClientBuilder;
 import static java.util.Collections.emptyList;
 
 /**
  * A builder for creating a reverse proxy, which is a {@link MuHandler} that can be added to a Mu Server.
  */
 public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
+
+    private static final Logger log = LoggerFactory.getLogger(ReverseProxyBuilder.class);
 
     private String viaName = "private";
     private HttpClient httpClient;
@@ -26,7 +32,7 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
     private boolean discardClientForwardedHeaders;
     private long totalTimeoutInMillis = TimeUnit.MINUTES.toMillis(5);
     private List<ProxyCompleteListener> proxyCompleteListeners;
-    private Set<String> doNotProxyHeaders = new HashSet<>();
+    private final Set<String> doNotProxyHeaders = new HashSet<>();
     private RequestInterceptor requestInterceptor;
     private ResponseInterceptor responseInterceptor;
 
@@ -52,6 +58,17 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
     public ReverseProxyBuilder withHttpClient(HttpClient httpClient) {
         this.httpClient = httpClient;
         return this;
+    }
+
+    /**
+     * Creates a new HTTP Client builder that is suitable for use in mu reverse proxy.
+     *
+     * @param trustAll If true, then any SSL certificate is allowed.
+     * @return An HTTP Client builder
+     */
+    public static HttpClient.Builder createHttpClient(boolean trustAll) {
+        return createHttpClientBuilder(trustAll)
+            .followRedirects(HttpClient.Redirect.NEVER);
     }
 
     /**
@@ -94,6 +111,12 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
      */
     public ReverseProxyBuilder proxyHostHeader(boolean sendHostToTarget) {
         if (sendHostToTarget) {
+            if (HttpClientUtils.DISALLOWED_REQUEST_HEADERS.contains("host")) {
+                throw new IllegalStateException(
+                    "Host header is not allowed to be set in JDK HTTP client at your current JDK version, " +
+                        "please try upgrading to JDK 17 or higher."
+                );
+            }
             doNotProxyHeaders.remove("host");
         } else {
             doNotProxyHeaders.add("host");
@@ -197,15 +220,21 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
 
         HttpClient client = httpClient;
         if (client == null) {
-            client = HttpClientUtils.createHttpClientBuilder(true)
-                    .followRedirects(HttpClient.Redirect.NEVER)
-                    .build();
+            client = createHttpClient(true).build();
         }
 
         List<ProxyCompleteListener> proxyCompleteListeners = this.proxyCompleteListeners;
         if (proxyCompleteListeners == null) {
             proxyCompleteListeners = emptyList();
         }
+
+        final HashSet<Object> notProxyHeaders = new HashSet<>() {{
+            addAll(HttpClientUtils.DISALLOWED_REQUEST_HEADERS);
+            addAll(doNotProxyHeaders);
+            remove("content-length"); // JDK http client will set it base on the actual body
+        }};
+
+        log.warn("these headers will not be proxied: {}", notProxyHeaders.stream().sorted().collect(Collectors.toList()));
 
         return new ReverseProxy(client, uriMapper, totalTimeoutInMillis, proxyCompleteListeners, viaName,
                 discardClientForwardedHeaders, sendLegacyForwardedHeaders, doNotProxyHeaders,

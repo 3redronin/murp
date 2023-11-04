@@ -5,22 +5,19 @@ import io.muserver.MuServer;
 import org.junit.After;
 import org.junit.Test;
 
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.time.Duration;
 
 import static io.muserver.MuServerBuilder.httpServer;
 import static io.muserver.MuServerBuilder.httpsServer;
+import static io.muserver.murp.ReverseProxyBuilder.createHttpClient;
 import static io.muserver.murp.ReverseProxyBuilder.reverseProxy;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
 
 public class TimeoutsTest {
 
-    private static final java.net.http.HttpClient client = HttpClientUtils.createHttpClientBuilder(true)
-            .followRedirects(HttpClient.Redirect.NEVER)
-            .build();
+    private static final java.net.http.HttpClient client = createHttpClient(true).build();
 
     private MuServer targetServer;
     private MuServer reverseProxyServer;
