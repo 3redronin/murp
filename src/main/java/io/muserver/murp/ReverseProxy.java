@@ -88,8 +88,6 @@ public class ReverseProxy implements MuHandler {
             return false;
         }
 
-        log.info("Proxying request {} to {}", clientRequest, target);
-
         final long start = System.currentTimeMillis();
         final AsyncHandle asyncHandle = clientRequest.handleAsync();
 
@@ -106,7 +104,7 @@ public class ReverseProxy implements MuHandler {
 
         Consumer<Throwable> closeClientRequest = (error) -> {
             if (error != null) {
-                log.warn("something wrong while handling client request " + clientRequest, error);
+                log.warn("error detected for " + clientRequest, error);
             }
 
             if (error != null && !clientResponse.hasStartedSendingData()) {
@@ -123,7 +121,6 @@ public class ReverseProxy implements MuHandler {
             CompletableFuture<HttpResponse<Void>> targetResponse = targetResponseFutureRef.get();
             if (targetResponse != null) {
                 targetResponse.cancel(true);
-                log.info("target request cancelled, uri={}", target);
             }
         };
 
@@ -293,10 +290,6 @@ public class ReverseProxy implements MuHandler {
                     targetResponseRef.set(voidHttpResponse);
 
                     long duration = System.currentTimeMillis() - start;
-
-                    if (throwable != null) {
-                        log.info("target request " + clientRequest + " failed", throwable);
-                    }
 
                     closeClientRequest.accept(throwable);
 
