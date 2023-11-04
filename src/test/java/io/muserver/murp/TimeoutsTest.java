@@ -10,14 +10,14 @@ import java.net.http.HttpResponse;
 
 import static io.muserver.MuServerBuilder.httpServer;
 import static io.muserver.MuServerBuilder.httpsServer;
-import static io.muserver.murp.ReverseProxyBuilder.createHttpClient;
+import static io.muserver.murp.ReverseProxyBuilder.createHttpClientBuilder;
 import static io.muserver.murp.ReverseProxyBuilder.reverseProxy;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
 
 public class TimeoutsTest {
 
-    private static final java.net.http.HttpClient client = createHttpClient(true).build();
+    private static final java.net.http.HttpClient client = createHttpClientBuilder(true).build();
 
     private MuServer targetServer;
     private MuServer reverseProxyServer;

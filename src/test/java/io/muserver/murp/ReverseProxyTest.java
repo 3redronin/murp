@@ -34,7 +34,7 @@ import java.util.zip.GZIPInputStream;
 import static io.muserver.Http2ConfigBuilder.http2EnabledIfAvailable;
 import static io.muserver.MuServerBuilder.httpServer;
 import static io.muserver.MuServerBuilder.httpsServer;
-import static io.muserver.murp.ReverseProxyBuilder.createHttpClient;
+import static io.muserver.murp.ReverseProxyBuilder.createHttpClientBuilder;
 import static io.muserver.murp.ReverseProxyBuilder.reverseProxy;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -45,7 +45,7 @@ import static scaffolding.MuAssert.assertEventually;
 
 public class ReverseProxyTest {
 
-    private static final HttpClient client = createHttpClient(true).build();
+    private static final HttpClient client = createHttpClientBuilder(true).build();
 
     @Test
     public void itCanProxyEverythingToATargetDomain() throws Exception {
@@ -416,7 +416,7 @@ public class ReverseProxyTest {
             .withMaxHeadersSize(maxHeaderSize)
             .addHandler(reverseProxy()
                 .withUriMapper(UriMapper.toDomain(targetServer.uri()))
-                .withHttpClient(createHttpClient(true).build())
+                .withHttpClient(createHttpClientBuilder(true).build())
             )
             .start();
 

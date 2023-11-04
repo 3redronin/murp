@@ -15,7 +15,6 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
-import static io.muserver.murp.HttpClientUtils.createHttpClientBuilder;
 import static java.util.Collections.emptyList;
 
 /**
@@ -66,8 +65,8 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
      * @param trustAll If true, then any SSL certificate is allowed.
      * @return An HTTP Client builder
      */
-    public static HttpClient.Builder createHttpClient(boolean trustAll) {
-        return createHttpClientBuilder(trustAll)
+    public static HttpClient.Builder createHttpClientBuilder(boolean trustAll) {
+        return HttpClientUtils.createHttpClientBuilder(trustAll)
             .followRedirects(HttpClient.Redirect.NEVER);
     }
 
@@ -220,7 +219,7 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
 
         HttpClient client = httpClient;
         if (client == null) {
-            client = createHttpClient(true).build();
+            client = createHttpClientBuilder(true).build();
         }
 
         List<ProxyCompleteListener> proxyCompleteListeners = this.proxyCompleteListeners;
