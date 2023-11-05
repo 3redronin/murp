@@ -20,6 +20,9 @@ import static java.util.Arrays.asList;
 
 /**
  * The core implementation for ReverseProxy
+ *
+ * @author Daniel Flower
+ * @version 1.0
  */
 public class ReverseProxy implements MuHandler {
     private static final Logger log = LoggerFactory.getLogger(ReverseProxy.class);
@@ -81,6 +84,7 @@ public class ReverseProxy implements MuHandler {
         additionalDoNotProxyHeaders.forEach(h -> this.doNotProxyToTarget.add(h.toLowerCase()));
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean handle(MuRequest clientRequest, MuResponse clientResponse) throws Exception {
         URI target = uriMapper.mapFrom(clientRequest);

@@ -7,9 +7,14 @@ import java.net.URI;
 import java.util.Properties;
 
 /**
- * Some utilities for the reverse proxy. If you want to create a reverse proxy, use {@link ReverseProxyBuilder#reverseProxy()}
+ * Some utilities for the reverse proxy. If you want to create a reverse proxy, use {@link io.muserver.murp.ReverseProxyBuilder#reverseProxy()}
+ *
+ * @author lujunjie
+ * @version $Id: $Id
  */
 public class Murp {
+
+    private Murp() {}
 
     private static final String version;
     static {
@@ -34,7 +39,9 @@ public class Murp {
     }
 
     /**
-     * @return Returns the current version of Murp, or 0.x if unknown
+     * Returns the current version of Murp, or 0.x if unknown
+     *
+     * @return murp version
      */
     public static String artifactVersion() {
         return version;
@@ -42,7 +49,8 @@ public class Murp {
 
     /**
      * <p>Given a gets the raw path and (if present) querystring portion of a URI.</p>
-     * <p>Note: paths and querystrings are not URL decoded.</p>
+     * <p>Note: paths and query strings are not URL decoded.</p>
+     *
      * @param uri The URI to get the info from
      * @return A string such as <code>/path?query=something</code>
      */
