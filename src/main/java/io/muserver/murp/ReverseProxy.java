@@ -123,7 +123,7 @@ public class ReverseProxy implements MuHandler {
             }
 
             CompletableFuture<HttpResponse<Void>> targetResponse = targetResponseFutureRef.get();
-            if (targetResponse != null) {
+            if (targetResponse != null && !targetResponse.isDone()) {
                 targetResponse.cancel(true);
             }
         };
