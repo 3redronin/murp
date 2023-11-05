@@ -8,6 +8,9 @@ import java.net.http.HttpResponse;
 
 /**
  * A hook for intercepting responses before they are sent back to the client.
+ *
+ * @author Daniel Flower
+ * @version 1.0
  */
 public interface ResponseInterceptor {
 
@@ -22,7 +25,7 @@ public interface ResponseInterceptor {
      * @param targetResponse The response received from the target server.
      * @param clientResponse The as-yet unsent response to the client. You can modify the response code, content
      *                       type and other headers, however you cannot alter the response body.
-     * @throws Exception Any unhandled exceptions will be logged but will not stop the response being sent.
+     * @throws java.lang.Exception Any unhandled exceptions will be logged but will not stop the response being sent.
      */
     void intercept(MuRequest clientRequest, HttpRequest targetRequest, HttpResponse<Void> targetResponse, MuResponse clientResponse) throws Exception;
 

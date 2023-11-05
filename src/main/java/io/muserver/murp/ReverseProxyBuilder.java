@@ -18,7 +18,10 @@ import java.util.stream.Collectors;
 import static java.util.Collections.emptyList;
 
 /**
- * A builder for creating a reverse proxy, which is a {@link MuHandler} that can be added to a Mu Server.
+ * A builder for creating a reverse proxy, which is a {@link io.muserver.MuHandler} that can be added to a Mu Server.
+ *
+ * @author Daniel Flower
+ * @version 1.0
  */
 public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
 
@@ -34,6 +37,8 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
     private final Set<String> doNotProxyHeaders = new HashSet<>();
     private RequestInterceptor requestInterceptor;
     private ResponseInterceptor responseInterceptor;
+
+    private ReverseProxyBuilder() {}
 
     /**
      * The name to add as the <code>Via</code> header, which defaults to <code>private</code>.
@@ -72,7 +77,7 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
 
     /**
      * Required value. Sets the mapper to use for creating target URIs.
-     * <p>If you want to proxy all requests to a single destination, consider using {@link UriMapper#toDomain(URI)}</p>
+     * <p>If you want to proxy all requests to a single destination, consider using {@link io.muserver.murp.UriMapper#toDomain(URI)}</p>
      * <p>If the mapper function returns null, then the handler will not proxy the request and the next handler in the
      * chain will be invoked (or a 404 will be returned if there are no further handlers that can handle the request).</p>
      *
@@ -206,10 +211,10 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
     }
 
     /**
+     * {@inheritDoc}
+     *
      * Creates a new ReverseProxy which is a MuHandler. You can pass the resulting handler directly
      * to {@link io.muserver.MuServerBuilder#addHandler(MuHandler)}
-     *
-     * @return A MuHandler that acts as a reverse proxy
      */
     @Override
     public ReverseProxy build() {
