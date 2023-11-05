@@ -1,27 +1,26 @@
 package io.muserver.murp;
 
 import io.muserver.*;
-import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.util.DeferredContentProvider;
-import org.eclipse.jetty.http.HttpField;
-import org.eclipse.jetty.http.HttpFields;
-import org.eclipse.jetty.http.HttpHeader;
-import org.eclipse.jetty.util.Callback;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetAddress;
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
-import static io.muserver.Mutils.toByteBuffer;
 import static java.util.Arrays.asList;
 
+/**
+ * The core implementation for ReverseProxy
+ */
 public class ReverseProxy implements MuHandler {
     private static final Logger log = LoggerFactory.getLogger(ReverseProxy.class);
 
@@ -29,14 +28,14 @@ public class ReverseProxy implements MuHandler {
      * An unmodifiable set of the Hop By Hop headers. All are in lowercase.
      */
     public static final Set<String> HOP_BY_HOP_HEADERS = Collections.unmodifiableSet(new HashSet<>(asList(
-        "keep-alive", "transfer-encoding", "te", "connection", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate")));
+            "keep-alive", "transfer-encoding", "te", "connection", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate")));
 
     private static final Set<String> REPRESSED;
 
     static {
         REPRESSED = new HashSet<>(HOP_BY_HOP_HEADERS);
         REPRESSED.addAll(new HashSet<>(asList(
-            "forwarded", "x-forwarded-by", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port", "x-forwarded-server", "via", "expect"
+                "forwarded", "x-forwarded-by", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port", "x-forwarded-server", "via", "expect"
         )));
 
         String ip;
@@ -83,156 +82,240 @@ public class ReverseProxy implements MuHandler {
     }
 
     @Override
-    public boolean handle(MuRequest clientReq, MuResponse clientResp) throws Exception {
-        URI target = uriMapper.mapFrom(clientReq);
+    public boolean handle(MuRequest clientRequest, MuResponse clientResponse) throws Exception {
+        URI target = uriMapper.mapFrom(clientRequest);
         if (target == null) {
             return false;
         }
 
         final long start = System.currentTimeMillis();
+        final AsyncHandle asyncHandle = clientRequest.handleAsync();
 
-        clientResp.headers().remove(HeaderNames.DATE); // so that the target's date can be used
+        clientResponse.headers().remove(HeaderNames.DATE); // so that the target's date can be used
 
-        final AsyncHandle asyncHandle = clientReq.handleAsync();
         final long id = counter.incrementAndGet();
         if (log.isDebugEnabled()) {
-            log.debug("[" + id + "] Proxying from " + clientReq.uri() + " to " + target);
+            log.debug("[" + id + "] Proxying from " + clientRequest.uri() + " to " + target);
         }
 
-        Request targetReq = httpClient.newRequest(target);
-        targetReq.method(clientReq.method().name());
-        String viaValue = clientReq.protocol() + " " + viaName;
-        boolean hasRequestBody = setTargetRequestHeaders(clientReq, targetReq, discardClientForwardedHeaders, sendLegacyForwardedHeaders, viaValue, doNotProxyToTarget);
+        AtomicReference<CompletableFuture<HttpResponse<Void>>> targetResponseFutureRef = new AtomicReference<>();
+        AtomicReference<HttpRequest> targetRequestRef = new AtomicReference<>();
+        AtomicReference<HttpResponse<Void>> targetResponseRef = new AtomicReference<>();
 
+        Consumer<Throwable> closeClientRequest = (error) -> {
+            if (error != null) {
+                log.warn("error detected for " + clientRequest, error);
+            }
+
+            if (error != null && !clientResponse.hasStartedSendingData()) {
+                final int status = (error instanceof TimeoutException) ? 504 : 500;
+                final String body = (error instanceof TimeoutException) ? "504 Gateway Timeout" : "500 Internal Server Error";
+                clientResponse.status(status);
+                asyncHandle.write(Mutils.toByteBuffer(body));
+            }
+
+            if (!clientResponse.responseState().endState()) {
+                asyncHandle.complete();
+            }
+
+            CompletableFuture<HttpResponse<Void>> targetResponse = targetResponseFutureRef.get();
+            if (targetResponse != null) {
+                targetResponse.cancel(true);
+            }
+        };
+
+        HttpRequest.BodyPublisher bodyPublisher;
+        boolean hasRequestBody = hasRequestBody(clientRequest);
         if (hasRequestBody) {
-            DeferredContentProvider targetReqBody = new DeferredContentProvider();
-            asyncHandle.setReadListener(new RequestBodyListener() {
+            bodyPublisher = new HttpRequest.BodyPublisher() {
                 @Override
-                public void onDataReceived(ByteBuffer buffer, DoneCallback done) {
-                    targetReqBody.offer(buffer, new Callback() {
+                public void subscribe(Flow.Subscriber<? super ByteBuffer> subscriber) {
+
+                    ConcurrentLinkedDeque<DoneCallback> doneCallbacks = new ConcurrentLinkedDeque<>();
+
+                    subscriber.onSubscribe(new Flow.Subscription() {
                         @Override
-                        public void succeeded() {
-                            try {
-                                done.onComplete(null);
-                            } catch (Exception e) {
-                                throw new RuntimeException("onComplete(null) failed", e);
+                        public void request(long n) {
+                            DoneCallback doneCallback = doneCallbacks.poll();
+                            if (doneCallback != null) {
+                                try {
+                                    doneCallback.onComplete(null);
+                                } catch (Exception e) {
+                                    log.warn("onComplete failed", e);
+                                    this.cancel();
+                                }
                             }
                         }
 
                         @Override
-                        public void failed(Throwable x) {
-                            try {
-                                done.onComplete(x);
-                            } catch (Exception e) {
-                                throw new RuntimeException("onComplete(Throwable) failed", e);
-                            }
+                        public void cancel() {
+                            closeClientRequest.accept(new RuntimeException("request body send cancel"));
+                        }
+                    });
+
+                    // start to read body
+                    asyncHandle.setReadListener(new RequestBodyListener() {
+                        @Override
+                        public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) throws Exception {
+                            doneCallbacks.add(doneCallback);
+                            subscriber.onNext(byteBuffer);
+                        }
+
+                        @Override
+                        public void onComplete() {
+                            subscriber.onComplete();
+                        }
+
+                        @Override
+                        public void onError(Throwable throwable) {
+                            // cancel the target request
+                            subscriber.onError(throwable);
+                            closeClientRequest.accept(new RuntimeException("request body read error"));
                         }
                     });
                 }
 
                 @Override
-                public void onComplete() {
-                    targetReqBody.close();
-                }
-
-                @Override
-                public void onError(Throwable t) {
-                    targetReqBody.failed(t);
-                }
-            });
-            targetReq.content(targetReqBody);
-        }
-
-        targetReq.onResponseHeaders(response -> {
-            clientResp.status(response.getStatus());
-            HttpFields targetRespHeaders = response.getHeaders();
-            List<String> customHopByHopHeaders = getCustomHopByHopHeaders(targetRespHeaders.get(HttpHeader.CONNECTION));
-            for (HttpField targetRespHeader : targetRespHeaders) {
-                String lowerName = targetRespHeader.getName().toLowerCase();
-                if (HOP_BY_HOP_HEADERS.contains(lowerName) || customHopByHopHeaders.contains(lowerName)) {
-                    continue;
-                }
-                String value = targetRespHeader.getValue();
-                clientResp.headers().add(targetRespHeader.getName(), value);
-            }
-            String newVia = getNewViaValue(viaValue, targetRespHeaders.getValuesList(HttpHeader.VIA));
-            clientResp.headers().set(HeaderNames.VIA, newVia);
-            if (responseInterceptor != null) {
-                try {
-                    responseInterceptor.intercept(clientReq, targetReq, response, clientResp);
-                } catch (Exception e) {
-                    log.error("Error while intercepting the response. The response will still be proxied.", e);
-                }
-            }
-        });
-        targetReq.onResponseContentAsync((response, content, callback) ->
-            asyncHandle.write(content, error -> {
-                if (error == null) {
-                    callback.succeeded();
-                } else {
-                    callback.failed(error);
-                }
-            }));
-        targetReq.timeout(totalTimeoutInMillis, TimeUnit.MILLISECONDS);
-
-        if (requestInterceptor != null) {
-            requestInterceptor.intercept(clientReq, targetReq);
-        }
-        targetReq.send(result -> {
-            long duration = System.currentTimeMillis() - start;
-            try {
-                if (result.isFailed()) {
-                    String errorID = UUID.randomUUID().toString();
-                    if (log.isDebugEnabled()) {
-                        log.debug("Failed to proxy response. ErrorID=" + errorID + " for " + result, result.getFailure());
+                public long contentLength() {
+                    String contentLength = clientRequest.headers().get(HeaderNames.CONTENT_LENGTH);
+                    if (contentLength != null) {
+                        return Long.parseLong(contentLength);
+                    } else {
+                        return -1;
                     }
-                    if (!clientResp.hasStartedSendingData()) {
-                        clientResp.contentType(ContentTypes.TEXT_HTML);
-                        if (result.getFailure() instanceof TimeoutException) {
-                            clientResp.status(504);
-                            asyncHandle.write(toByteBuffer("<h1>504 Gateway Timeout</h1><p>The target did not respond in a timely manner. ErrorID="+ errorID + "</p>"));
-                        } else {
-                            clientResp.status(502);
-                            asyncHandle.write(toByteBuffer("<h1>502 Bad Gateway</h1><p>ErrorID=" + errorID + "</p>"+ errorID + "</p>"));
+                }
+            };
+        } else {
+            bodyPublisher = HttpRequest.BodyPublishers.noBody();
+        }
+
+        HttpRequest.Builder targetReq = HttpRequest.newBuilder()
+                .uri(target)
+                .method(clientRequest.method().toString(), bodyPublisher);
+
+        String viaValue = clientRequest.protocol() + " " + viaName;
+        setTargetRequestHeaders(clientRequest, targetReq, discardClientForwardedHeaders, sendLegacyForwardedHeaders, viaValue, doNotProxyToTarget);
+
+
+        HttpResponse.BodyHandler<Void> bh = new HttpResponse.BodyHandler<>() {
+            @Override
+            public HttpResponse.BodySubscriber<Void> apply(HttpResponse.ResponseInfo responseInfo) {
+
+                clientResponse.status(responseInfo.statusCode());
+
+                // set response headers
+                for (Map.Entry<String, List<String>> headerEntry : responseInfo.headers().map().entrySet()) {
+                    for (String value : headerEntry.getValue()) {
+                        String header = headerEntry.getKey();
+                        String lowerName = header.toLowerCase();
+                        if (HOP_BY_HOP_HEADERS.contains(lowerName)) {
+                            continue;
+                        }
+                        clientResponse.headers().set(header, value);
+                    }
+                }
+
+                String newVia = getNewViaValue(viaValue, clientResponse.headers().getAll(HeaderNames.VIA));
+                clientResponse.headers().set(HeaderNames.VIA, newVia);
+
+                if (responseInterceptor != null) {
+                    try {
+                        responseInterceptor.intercept(clientRequest, targetRequestRef.get(), targetResponseRef.get(), clientResponse);
+                    } catch (Exception e) {
+                        log.info("responseInterceptor error", e);
+                    }
+                }
+
+                // response body
+                return HttpResponse.BodySubscribers.fromSubscriber(new Flow.Subscriber<>() {
+
+                    private Flow.Subscription subscription;
+
+                    @Override
+                    public void onSubscribe(Flow.Subscription subscription) {
+                        this.subscription = subscription;
+                        subscription.request(1);
+                    }
+
+                    @Override
+                    public void onNext(List<ByteBuffer> item) {
+                        for (ByteBuffer byteBuffer : item) {
+                            if (clientResponse.responseState().endState()) {
+                                subscription.cancel();
+                                return;
+                            }
+                            asyncHandle.write(byteBuffer, throwable -> {
+                                if (throwable != null) {
+                                    onError(throwable);
+                                    return;
+                                }
+                                subscription.request(1);
+                            });
                         }
                     }
-                } else {
-                    if (log.isDebugEnabled()) {
-                        log.info("[" + id + "] completed in " + duration + "ms: " + result);
+
+                    @Override
+                    public void onError(Throwable throwable) {
+                        closeClientRequest.accept(throwable);
                     }
-                }
-            } finally {
-                asyncHandle.complete();
-                for (ProxyCompleteListener proxyCompleteListener : proxyCompleteListeners) {
-                    try {
-                        proxyCompleteListener.onComplete(clientReq, clientResp, target, duration);
-                    } catch (Exception e) {
-                        log.warn(proxyCompleteListener + " threw an error while processing onComplete", e);
+
+                    @Override
+                    public void onComplete() {
+                        targetResponseFutureRef.set(null);
+                        asyncHandle.complete();
                     }
-                }
+                });
             }
-        });
+        };
+
+        if (requestInterceptor != null) {
+            try {
+                requestInterceptor.intercept(clientRequest, targetReq);
+            } catch (Throwable throwable) {
+                log.info("requestInterceptor error", throwable);
+                clientResponse.status(500);
+                asyncHandle.complete();
+                return true;
+            }
+        }
+
+        HttpRequest targetRequest = targetReq.build();
+        targetRequestRef.set(targetRequest);
+        targetResponseFutureRef.set(httpClient.sendAsync(targetRequest, bh));
+
+        targetResponseFutureRef.get()
+                .orTimeout(totalTimeoutInMillis, TimeUnit.MILLISECONDS)
+                .whenComplete((voidHttpResponse, throwable) -> {
+
+                    targetResponseRef.set(voidHttpResponse);
+
+                    long duration = System.currentTimeMillis() - start;
+
+                    closeClientRequest.accept(throwable);
+
+                    for (ProxyCompleteListener proxyCompleteListener : proxyCompleteListeners) {
+                        try {
+                            proxyCompleteListener.onComplete(clientRequest, clientResponse, target, duration);
+                        } catch (Exception e) {
+                            log.warn("proxyCompleteListener error", e);
+                        }
+                    }
+                });
 
         return true;
     }
 
-    /**
-     * Copies headers from the clientRequest to the targetRequest, removing any Hop-By-Hop headers and adding Forwarded headers.
-     *
-     * @param clientRequest                 The original Mu request to copy headers from.
-     * @param targetRequest                 A Jetty request to copy the headers to.
-     * @param discardClientForwardedHeaders Set true to ignore Forwarded headers from the client request
-     * @param sendLegacyForwardedHeaders    Set true to send X-Forwarded-* headers along with Forwarded headers
-     * @param viaValue                      The value to set on the Via header, for example <code>HTTP/1.1 myserver</code>
-     * @return Returns true if the client request has a body; otherwise false.
-     */
-    public static boolean setRequestHeaders(MuRequest clientRequest, Request targetRequest, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders, String viaValue) {
-        Mutils.notNull("clientRequest", clientRequest);
-        Mutils.notNull("targetRequest", targetRequest);
-        return setTargetRequestHeaders(clientRequest, targetRequest, discardClientForwardedHeaders, sendLegacyForwardedHeaders, viaValue, REPRESSED);
+    private static boolean hasRequestBody(MuRequest request) {
+        for (Map.Entry<String, String> header : request.headers()) {
+            String headerName = header.getKey().toLowerCase();
+            if (headerName.equals("content-length") || headerName.equals("transfer-encoding")) {
+                return true;
+            }
+        }
+        return false;
     }
 
-    private static boolean setTargetRequestHeaders(MuRequest clientRequest, Request targetRequest, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders, String viaValue, Set<String> excludedHeaders) {
+    private static boolean setTargetRequestHeaders(MuRequest clientRequest, HttpRequest.Builder targetRequest, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders, String viaValue, Set<String> excludedHeaders) {
         Headers reqHeaders = clientRequest.headers();
         List<String> customHopByHop = getCustomHopByHopHeaders(reqHeaders.get(HeaderNames.CONNECTION));
 
@@ -241,14 +324,14 @@ public class ReverseProxy implements MuHandler {
             String key = clientHeader.getKey();
             String lowKey = key.toLowerCase();
             hasContentLengthOrTransferEncoding |= lowKey.equals("content-length") || lowKey.equals("transfer-encoding");
-            if (excludedHeaders.contains(lowKey) || customHopByHop.contains(lowKey)) {
+            if (excludedHeaders.contains(lowKey) || customHopByHop.contains(lowKey) || HttpClientUtils.DISALLOWED_REQUEST_HEADERS.contains(lowKey)) {
                 continue;
             }
             targetRequest.header(key, clientHeader.getValue());
         }
 
         String newViaValue = getNewViaValue(viaValue, clientRequest.headers().getAll(HeaderNames.VIA));
-        targetRequest.header(HttpHeader.VIA, newViaValue);
+        targetRequest.header(HeaderNames.VIA.toString(), newViaValue);
 
         setForwardedHeaders(clientRequest, targetRequest, discardClientForwardedHeaders, sendLegacyForwardedHeaders);
 
@@ -265,29 +348,29 @@ public class ReverseProxy implements MuHandler {
      * Sets Forwarded and optionally X-Forwarded-* headers to the target request, based on the client request
      *
      * @param clientRequest                 the received client request
-     * @param targetRequest                 the target request to write the headers to
+     * @param targetRequestBuilder          the target request builder to write the headers to
      * @param discardClientForwardedHeaders if <code>true</code> then existing Forwarded headers on the client request will be discarded (normally false, unless you do not trust the upstream system)
      * @param sendLegacyForwardedHeaders    if <code>true</code> then X-Forwarded-Proto/Host/For headers will also be added
      */
-    public static void setForwardedHeaders(MuRequest clientRequest, Request targetRequest, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders) {
+    public static void setForwardedHeaders(MuRequest clientRequest, HttpRequest.Builder targetRequestBuilder, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders) {
         Mutils.notNull("clientRequest", clientRequest);
-        Mutils.notNull("targetRequest", targetRequest);
+        Mutils.notNull("targetRequest", targetRequestBuilder);
         List<ForwardedHeader> forwardHeaders;
         if (discardClientForwardedHeaders) {
             forwardHeaders = Collections.emptyList();
         } else {
             forwardHeaders = clientRequest.headers().forwarded();
             for (ForwardedHeader existing : forwardHeaders) {
-                targetRequest.header(HttpHeader.FORWARDED, existing.toString());
+                targetRequestBuilder.header(HeaderNames.FORWARDED.toString(), existing.toString());
             }
         }
 
         ForwardedHeader newForwarded = createForwardedHeader(clientRequest);
-        targetRequest.header(HttpHeader.FORWARDED, newForwarded.toString());
+        targetRequestBuilder.header(HeaderNames.FORWARDED.toString(), newForwarded.toString());
 
         if (sendLegacyForwardedHeaders) {
             ForwardedHeader first = forwardHeaders.isEmpty() ? newForwarded : forwardHeaders.get(0);
-            setXForwardedHeaders(targetRequest, first);
+            setXForwardedHeaders(targetRequestBuilder, first);
         }
     }
 
@@ -297,10 +380,10 @@ public class ReverseProxy implements MuHandler {
      * @param targetRequest   The request to add the headers to
      * @param forwardedHeader The forwarded header that has the original client information on it.
      */
-    private static void setXForwardedHeaders(Request targetRequest, ForwardedHeader forwardedHeader) {
-        targetRequest.header(HttpHeader.X_FORWARDED_PROTO, forwardedHeader.proto());
-        targetRequest.header(HttpHeader.X_FORWARDED_HOST, forwardedHeader.host());
-        targetRequest.header(HttpHeader.X_FORWARDED_FOR, forwardedHeader.forValue());
+    private static void setXForwardedHeaders(HttpRequest.Builder targetRequest, ForwardedHeader forwardedHeader) {
+        targetRequest.header(HeaderNames.X_FORWARDED_PROTO.toString(), forwardedHeader.proto());
+        targetRequest.header(HeaderNames.X_FORWARDED_HOST.toString(), forwardedHeader.host());
+        targetRequest.header(HeaderNames.X_FORWARDED_FOR.toString(), forwardedHeader.forValue());
     }
 
     /**
@@ -328,4 +411,5 @@ public class ReverseProxy implements MuHandler {
         }
         return customHopByHop;
     }
+
 }

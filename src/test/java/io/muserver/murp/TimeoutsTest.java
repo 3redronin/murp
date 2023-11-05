@@ -2,74 +2,79 @@ package io.muserver.murp;
 
 import io.muserver.Method;
 import io.muserver.MuServer;
-import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
 import org.junit.Test;
+
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 
 import static io.muserver.MuServerBuilder.httpServer;
 import static io.muserver.MuServerBuilder.httpsServer;
+import static io.muserver.murp.ReverseProxyBuilder.createHttpClientBuilder;
 import static io.muserver.murp.ReverseProxyBuilder.reverseProxy;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
 
 public class TimeoutsTest {
 
-    private static final HttpClient client = new HttpClient(new SslContextFactory(true));
+    private static final java.net.http.HttpClient client = createHttpClientBuilder(true).build();
+
     private MuServer targetServer;
     private MuServer reverseProxyServer;
-
-    @BeforeClass
-    public static void start() throws Exception {
-        client.start();
-    }
 
     @Test
     public void totalTimeoutCauses504() throws Exception {
         targetServer = httpServer()
-            .addHandler(Method.GET, "/",
-                (request, response, pathParams) -> Thread.sleep(200))
-            .start();
+                .addHandler(Method.GET, "/",
+                        (request, response, pathParams) -> Thread.sleep(200))
+                .start();
 
         reverseProxyServer = httpsServer()
-            .addHandler(reverseProxy()
-                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
-                .withTotalTimeout(1)
-            )
-            .start();
+                .addHandler(reverseProxy()
+                        .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                        .withTotalTimeout(1)
+                )
+                .start();
 
-        ContentResponse resp = client.GET(reverseProxyServer.uri());
-        assertThat(resp.getStatus(), is(504));
-        assertThat(resp.getContentAsString(), containsString("504 Gateway Timeout"));
+        HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
+                .uri(reverseProxyServer.uri())
+                .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(resp.statusCode(), is(504));
+        assertThat(resp.body(), containsString("504 Gateway Timeout"));
     }
 
     @Test
     public void idleTimeoutCausesDisconnection() throws Exception {
         targetServer = httpServer()
-            .addHandler(Method.GET, "/",
-                (request, response, pathParams) -> {
-                    response.sendChunk("Hello");
-                    Thread.sleep(200);
-                    try {
-                        response.sendChunk("Goodbye");
-                    } catch (Exception ignored) {
-                    }
-                })
-            .start();
+                .addHandler(Method.GET, "/",
+                        (request, response, pathParams) -> {
+                            response.sendChunk("Hello");
+                            Thread.sleep(200);
+                            try {
+                                response.sendChunk("Goodbye");
+                            } catch (Exception ignored) {
+                            }
+                        })
+                .start();
 
         reverseProxyServer = httpsServer()
-            .addHandler(reverseProxy()
-                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
-                .withHttpClient(HttpClientBuilder.httpClient().withIdleTimeoutMillis(50))
-            )
-            .start();
+                .addHandler(reverseProxy()
+                        .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                        .withTotalTimeout(50)
+                        .withHttpClient(HttpClientUtils
+                                .createHttpClientBuilder(true)
+                                .build())
+                )
+                .start();
 
-        ContentResponse resp = client.GET(reverseProxyServer.uri());
-        assertThat(resp.getStatus(), isOneOf(504, 200));
-        assertThat(resp.getContentAsString(), not(containsString("Goodbye")));
+        HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
+                .uri(reverseProxyServer.uri())
+                .build(), HttpResponse.BodyHandlers.ofString());
+
+
+        assertThat(resp.statusCode(), isOneOf(504, 200));
+        assertThat(resp.body(), not(containsString("Goodbye")));
     }
 
     @After
@@ -80,11 +85,6 @@ public class TimeoutsTest {
         if (reverseProxyServer != null) {
             reverseProxyServer.stop();
         }
-    }
-
-    @AfterClass
-    public static void stop() throws Exception {
-        client.stop();
     }
 
 }
