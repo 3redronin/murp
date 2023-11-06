@@ -146,7 +146,7 @@
                 <version>3.1.0</version>
                 <configuration>
                     <systemPropertyVariables>
-                        <jdk.httpclient.HttpClient.log>all</jdk.httpclient.HttpClient.log>
+                        <jdk.internal.httpclient.debug>true</jdk.internal.httpclient.debug>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
