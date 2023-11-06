@@ -12,6 +12,7 @@ import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -123,7 +124,8 @@ public class ReverseProxy implements MuHandler {
             }
 
             CompletableFuture<HttpResponse<Void>> targetResponse = targetResponseFutureRef.get();
-            if (targetResponse != null && !targetResponse.isDone()) {
+            if (error!= null && targetResponse != null && !targetResponse.isDone()) {
+                log.info("cancelling target request for {}", clientRequest);
                 targetResponse.cancel(true);
             }
         };
@@ -135,48 +137,63 @@ public class ReverseProxy implements MuHandler {
                 @Override
                 public void subscribe(Flow.Subscriber<? super ByteBuffer> subscriber) {
 
-                    ConcurrentLinkedDeque<DoneCallback> doneCallbacks = new ConcurrentLinkedDeque<>();
+                    try {
+                        ConcurrentLinkedDeque<DoneCallback> doneCallbacks = new ConcurrentLinkedDeque<>();
+                        AtomicBoolean isFirst = new AtomicBoolean(true);
 
-                    subscriber.onSubscribe(new Flow.Subscription() {
-                        @Override
-                        public void request(long n) {
-                            DoneCallback doneCallback = doneCallbacks.poll();
-                            if (doneCallback != null) {
-                                try {
-                                    doneCallback.onComplete(null);
-                                } catch (Exception e) {
-                                    log.warn("onComplete failed", e);
-                                    this.cancel();
+                        subscriber.onSubscribe(new Flow.Subscription() {
+                            @Override
+                            public void request(long n) {
+
+                                DoneCallback doneCallback = doneCallbacks.poll();
+                                if (doneCallback != null) {
+                                    try {
+                                        doneCallback.onComplete(null);
+                                    } catch (Exception e) {
+                                        log.warn("onComplete failed", e);
+                                        this.cancel();
+                                    }
+                                }
+
+                                if (isFirst.compareAndSet(true, false)) {
+
+                                    // start reading client body only after target subscription established
+                                    // otherwise calling `subscriber.onNext(byteBuffer)` will sometimes cause JDK http client
+                                    // throw NullPointerException and cancel the subscription
+                                    asyncHandle.setReadListener(new RequestBodyListener() {
+                                        @Override
+                                        public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) throws Exception {
+                                            doneCallbacks.add(doneCallback);
+                                            subscriber.onNext(byteBuffer);
+                                        }
+
+                                        @Override
+                                        public void onComplete() {
+                                            subscriber.onComplete();
+                                        }
+
+                                        @Override
+                                        public void onError(Throwable throwable) {
+                                            // cancel the target request
+                                            subscriber.onError(throwable);
+                                            closeClientRequest.accept(new RuntimeException("request body read error"));
+                                        }
+                                    });
                                 }
                             }
-                        }
 
-                        @Override
-                        public void cancel() {
-                            closeClientRequest.accept(new RuntimeException("request body send cancel"));
-                        }
-                    });
+                            @Override
+                            public void cancel() {
+                                closeClientRequest.accept(new RuntimeException("request body send cancel"));
+                            }
+                        });
 
-                    // start to read body
-                    asyncHandle.setReadListener(new RequestBodyListener() {
-                        @Override
-                        public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) throws Exception {
-                            doneCallbacks.add(doneCallback);
-                            subscriber.onNext(byteBuffer);
-                        }
 
-                        @Override
-                        public void onComplete() {
-                            subscriber.onComplete();
-                        }
+                    } catch (Throwable throwable) {
+                        log.info("body subscribe error", throwable);
+                        throw throwable;
+                    }
 
-                        @Override
-                        public void onError(Throwable throwable) {
-                            // cancel the target request
-                            subscriber.onError(throwable);
-                            closeClientRequest.accept(new RuntimeException("request body read error"));
-                        }
-                    });
                 }
 
                 @Override
