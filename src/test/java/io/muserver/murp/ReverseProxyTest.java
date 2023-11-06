@@ -82,7 +82,7 @@ public class ReverseProxyTest {
                     @Override
                     public void request(long n) {
                         if (counter.incrementAndGet() <= 100) {
-                            String partial = UUID.randomUUID() + " ";
+                            final String partial = UUID.randomUUID() + " ";
                             bodyBuilder.append(partial);
                             subscriber.onNext(ByteBuffer.wrap(partial.getBytes()));
                         } else {
