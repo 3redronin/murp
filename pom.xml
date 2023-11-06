@@ -38,13 +38,13 @@
     </developers>
 
     <ciManagement>
-        <system>travis-ci</system>
-        <url>https://travis-ci.org/3redronin/murp</url>
+        <system>GitHub Actions</system>
+        <url>https://github.com/3redronin/murp/actions/workflows/ci.yaml</url>
     </ciManagement>
 
     <scm>
         <url>https://github.com/3redronin/murp</url>
-        <connection>scm:git:git@github.com:3redronin/murp.git</connection>
+        <connection>scm:git:https://github.com/3redronin/murp.git</connection>
     </scm>
 
     <dependencies>
