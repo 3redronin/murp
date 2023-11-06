@@ -156,7 +156,10 @@ public class ReverseProxy implements MuHandler {
                                 }
 
                                 if (isFirst.compareAndSet(true, false)) {
-                                    // start to read body
+
+                                    // start reading client body only after target subscription established
+                                    // otherwise calling `subscriber.onNext(byteBuffer)` will sometimes cause JDK http client
+                                    // throw NullPointerException and cancel the subscription
                                     asyncHandle.setReadListener(new RequestBodyListener() {
                                         @Override
                                         public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) throws Exception {
