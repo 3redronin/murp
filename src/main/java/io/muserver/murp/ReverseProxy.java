@@ -12,6 +12,7 @@ import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -138,10 +139,12 @@ public class ReverseProxy implements MuHandler {
 
                     try {
                         ConcurrentLinkedDeque<DoneCallback> doneCallbacks = new ConcurrentLinkedDeque<>();
+                        AtomicBoolean isFirst = new AtomicBoolean(true);
 
                         subscriber.onSubscribe(new Flow.Subscription() {
                             @Override
                             public void request(long n) {
+
                                 DoneCallback doneCallback = doneCallbacks.poll();
                                 if (doneCallback != null) {
                                     try {
@@ -151,6 +154,29 @@ public class ReverseProxy implements MuHandler {
                                         this.cancel();
                                     }
                                 }
+
+                                if (isFirst.compareAndSet(true, false)) {
+                                    // start to read body
+                                    asyncHandle.setReadListener(new RequestBodyListener() {
+                                        @Override
+                                        public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) throws Exception {
+                                            doneCallbacks.add(doneCallback);
+                                            subscriber.onNext(byteBuffer);
+                                        }
+
+                                        @Override
+                                        public void onComplete() {
+                                            subscriber.onComplete();
+                                        }
+
+                                        @Override
+                                        public void onError(Throwable throwable) {
+                                            // cancel the target request
+                                            subscriber.onError(throwable);
+                                            closeClientRequest.accept(new RuntimeException("request body read error"));
+                                        }
+                                    });
+                                }
                             }
 
                             @Override
@@ -159,26 +185,7 @@ public class ReverseProxy implements MuHandler {
                             }
                         });
 
-                        // start to read body
-                        asyncHandle.setReadListener(new RequestBodyListener() {
-                            @Override
-                            public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) throws Exception {
-                                doneCallbacks.add(doneCallback);
-                                subscriber.onNext(byteBuffer);
-                            }
 
-                            @Override
-                            public void onComplete() {
-                                subscriber.onComplete();
-                            }
-
-                            @Override
-                            public void onError(Throwable throwable) {
-                                // cancel the target request
-                                subscriber.onError(throwable);
-                                closeClientRequest.accept(new RuntimeException("request body read error"));
-                            }
-                        });
                     } catch (Throwable throwable) {
                         log.info("body subscribe error", throwable);
                         throw throwable;
