@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
@@ -73,10 +74,28 @@ public class ReverseProxyTest {
             )
             .start();
 
-        String requestBody = largeRandomString();
-
+        final StringBuilder bodyBuilder = new StringBuilder();
         HttpResponse<String> someText = client.send(HttpRequest.newBuilder()
-            .method("POST", HttpRequest.BodyPublishers.ofString(requestBody))
+            .method("POST", HttpRequest.BodyPublishers.fromPublisher(subscriber -> {
+                AtomicInteger counter = new AtomicInteger();
+                subscriber.onSubscribe(new Flow.Subscription() {
+                    @Override
+                    public void request(long n) {
+                        if (counter.incrementAndGet() <= 100) {
+                            String partial = UUID.randomUUID() + " ";
+                            bodyBuilder.append(partial);
+                            subscriber.onNext(ByteBuffer.wrap(partial.getBytes()));
+                        } else {
+                            subscriber.onComplete();
+                        }
+
+                    }
+
+                    @Override
+                    public void cancel() {
+                    }
+                });
+            }))
             .uri(reverseProxyServer.uri().resolve("/some-text"))
             .header("Connection", "Keep-Alive, Foo, Bar")
             .header("foo", "abc")
@@ -91,7 +110,7 @@ public class ReverseProxyTest {
         assertThat(headers.firstValue("Content-Length").orElse(""), is(notNullValue()));
         assertThat(headers.firstValue("Via").orElse(""), is("HTTP/1.1 private"));
         assertThat(headers.firstValue("Forwarded").isEmpty(), is(true));
-        assertThat(someText.body(), is("Hello: " + requestBody));
+        assertThat(someText.body(), is("Hello: " + bodyBuilder.toString()));
         assertThat("Timed out waiting for notification",
             notificationAddedLatch.await(10, TimeUnit.SECONDS), is(true));
         assertThat("Actual: " + notifications, notifications, contains("Did POST /some-text and returned a 201 from " + targetServer.uri().resolve("/some-text")));

@@ -136,48 +136,54 @@ public class ReverseProxy implements MuHandler {
                 @Override
                 public void subscribe(Flow.Subscriber<? super ByteBuffer> subscriber) {
 
-                    ConcurrentLinkedDeque<DoneCallback> doneCallbacks = new ConcurrentLinkedDeque<>();
+                    try {
+                        ConcurrentLinkedDeque<DoneCallback> doneCallbacks = new ConcurrentLinkedDeque<>();
 
-                    subscriber.onSubscribe(new Flow.Subscription() {
-                        @Override
-                        public void request(long n) {
-                            DoneCallback doneCallback = doneCallbacks.poll();
-                            if (doneCallback != null) {
-                                try {
-                                    doneCallback.onComplete(null);
-                                } catch (Exception e) {
-                                    log.warn("onComplete failed", e);
-                                    this.cancel();
+                        subscriber.onSubscribe(new Flow.Subscription() {
+                            @Override
+                            public void request(long n) {
+                                DoneCallback doneCallback = doneCallbacks.poll();
+                                if (doneCallback != null) {
+                                    try {
+                                        doneCallback.onComplete(null);
+                                    } catch (Exception e) {
+                                        log.warn("onComplete failed", e);
+                                        this.cancel();
+                                    }
                                 }
                             }
-                        }
 
-                        @Override
-                        public void cancel() {
-                            closeClientRequest.accept(new RuntimeException("request body send cancel"));
-                        }
-                    });
+                            @Override
+                            public void cancel() {
+                                closeClientRequest.accept(new RuntimeException("request body send cancel"));
+                            }
+                        });
 
-                    // start to read body
-                    asyncHandle.setReadListener(new RequestBodyListener() {
-                        @Override
-                        public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) throws Exception {
-                            doneCallbacks.add(doneCallback);
-                            subscriber.onNext(byteBuffer);
-                        }
+                        // start to read body
+                        asyncHandle.setReadListener(new RequestBodyListener() {
+                            @Override
+                            public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) throws Exception {
+                                doneCallbacks.add(doneCallback);
+                                subscriber.onNext(byteBuffer);
+                            }
 
-                        @Override
-                        public void onComplete() {
-                            subscriber.onComplete();
-                        }
+                            @Override
+                            public void onComplete() {
+                                subscriber.onComplete();
+                            }
 
-                        @Override
-                        public void onError(Throwable throwable) {
-                            // cancel the target request
-                            subscriber.onError(throwable);
-                            closeClientRequest.accept(new RuntimeException("request body read error"));
-                        }
-                    });
+                            @Override
+                            public void onError(Throwable throwable) {
+                                // cancel the target request
+                                subscriber.onError(throwable);
+                                closeClientRequest.accept(new RuntimeException("request body read error"));
+                            }
+                        });
+                    } catch (Throwable throwable) {
+                        log.info("body subscribe error", throwable);
+                        throw throwable;
+                    }
+
                 }
 
                 @Override
