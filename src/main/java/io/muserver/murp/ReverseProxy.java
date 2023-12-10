@@ -105,7 +105,6 @@ public class ReverseProxy implements MuHandler {
 
         AtomicReference<CompletableFuture<HttpResponse<Void>>> targetResponseFutureRef = new AtomicReference<>();
         AtomicReference<HttpRequest> targetRequestRef = new AtomicReference<>();
-        AtomicReference<HttpResponse<Void>> targetResponseRef = new AtomicReference<>();
 
         Consumer<Throwable> closeClientRequest = (error) -> {
             if (error != null) {
@@ -232,7 +231,7 @@ public class ReverseProxy implements MuHandler {
                         if (HOP_BY_HOP_HEADERS.contains(lowerName)) {
                             continue;
                         }
-                        clientResponse.headers().set(header, value);
+                        clientResponse.headers().add(header, value);
                     }
                 }
 
@@ -241,7 +240,7 @@ public class ReverseProxy implements MuHandler {
 
                 if (responseInterceptor != null) {
                     try {
-                        responseInterceptor.intercept(clientRequest, targetRequestRef.get(), targetResponseRef.get(), clientResponse);
+                        responseInterceptor.intercept(clientRequest, targetRequestRef.get(), responseInfo, clientResponse);
                     } catch (Exception e) {
                         log.info("responseInterceptor error", e);
                     }
@@ -307,8 +306,6 @@ public class ReverseProxy implements MuHandler {
         targetResponseFutureRef.get()
                 .orTimeout(totalTimeoutInMillis, TimeUnit.MILLISECONDS)
                 .whenComplete((voidHttpResponse, throwable) -> {
-
-                    targetResponseRef.set(voidHttpResponse);
 
                     long duration = System.currentTimeMillis() - start;
 

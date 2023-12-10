@@ -22,11 +22,11 @@ public interface ResponseInterceptor {
      *
      * @param clientRequest  The original request from the client.
      * @param targetRequest  The request that was sent to the target.
-     * @param targetResponse The response received from the target server.
+     * @param targetResponseInfo The responseInfo received from the target server, headers info is available.
      * @param clientResponse The as-yet unsent response to the client. You can modify the response code, content
      *                       type and other headers, however you cannot alter the response body.
      * @throws java.lang.Exception Any unhandled exceptions will be logged but will not stop the response being sent.
      */
-    void intercept(MuRequest clientRequest, HttpRequest targetRequest, HttpResponse<Void> targetResponse, MuResponse clientResponse) throws Exception;
+    void intercept(MuRequest clientRequest, HttpRequest targetRequest, HttpResponse.ResponseInfo targetResponseInfo, MuResponse clientResponse) throws Exception;
 
 }

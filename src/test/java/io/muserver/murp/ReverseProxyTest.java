@@ -29,6 +29,7 @@ import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
@@ -294,8 +295,8 @@ public class ReverseProxyTest {
                 assertThat(resp.headers("date"), hasSize(1));
                 assertThat(resp.headers("via"), contains("HTTP/1.1 internalrp, HTTP/2.0 externalrp"));
                 assertThat(resp.body().string(), is("The Via header is [HTTP/2.0 externalrp, HTTP/1.1 internalrp]" +
-                        " and forwarded is https with host " + externalRP.uri().getAuthority() + ", http with host "
-                        + externalRP.uri().getAuthority()));
+                    " and forwarded is https with host " + externalRP.uri().getAuthority() + ", http with host "
+                    + externalRP.uri().getAuthority()));
             }
         }
     }
@@ -369,6 +370,37 @@ public class ReverseProxyTest {
         }
     }
 
+    @Test
+    public void canReceivedMultipleSetCookieHeaders() throws InterruptedException {
+        MuServer targetServer = httpServer()
+            .addHandler(Method.GET, "/", (request, response, pp) -> {
+                response.status(200);
+                response.headers().add("set-cookie", "cooke_a=a");
+                response.headers().add("set-cookie", "cooke_b=b");
+            })
+            .start();
+
+        MuServer rp = httpServer()
+            .addHandler(reverseProxy()
+                .withViaName("externalrp")
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+            )
+            .start();
+
+        try (okhttp3.Response resp = call(request(targetServer.uri().resolve("/")))) {
+            assertThat(resp.code(), is(200));
+            assertThat(resp.headers("set-cookie"), hasSize(2));
+            assertThat(resp.headers("set-cookie").get(0), equalTo("cooke_a=a"));
+            assertThat(resp.headers("set-cookie").get(1), equalTo("cooke_b=b"));
+        }
+
+        try (okhttp3.Response resp = call(request(rp.uri().resolve("/")))) {
+            assertThat(resp.code(), is(200));
+            assertThat(resp.headers("set-cookie"), hasSize(2));
+            assertThat(resp.headers("set-cookie").get(0), equalTo("cooke_a=a"));
+            assertThat(resp.headers("set-cookie").get(1), equalTo("cooke_b=b"));
+        }
+    }
 
     private void runIfJava9OrLater() {
         Assume.assumeThat("This test runs only on java 9 an later", System.getProperty("java.specification.version"), not(equalTo("1.8")));
@@ -385,6 +417,8 @@ public class ReverseProxyTest {
             })
             .start();
 
+        AtomicReference<String> removedHeader = new AtomicReference<>();
+
         MuServer reverseProxyServer = httpServer()
             .addHandler(reverseProxy()
                 .withUriMapper(UriMapper.toDomain(targetServer.uri()))
@@ -398,6 +432,7 @@ public class ReverseProxyTest {
                     headers.set("X-Blah", clientRequest.attribute("blah"));
                     headers.set("X-Added-By-Resp", "Added-by-resp");
                     headers.remove("X-Added-By-Target");
+                    removedHeader.set(targetResponse.headers().firstValue("X-Added-By-Target").get());
                 })
                 .addProxyCompleteListener(new Slf4jResponseLogger())
             )
@@ -408,12 +443,11 @@ public class ReverseProxyTest {
             .uri(reverseProxyServer.uri().resolve("/"))
             .build(), HttpResponse.BodyHandlers.ofString());
 
-
         assertThat(resp.statusCode(), is(400));
         assertThat(resp.headers().allValues("X-Added-By-Resp"), contains("Added-by-resp"));
         assertThat(resp.headers().allValues("X-Added-By-Target"), empty());
-        String body = resp.body();
-        assertThat(body, equalTo("X-Blocked = null, X-Added = I was added"));
+        assertThat(resp.body(), equalTo("X-Blocked = null, X-Added = I was added"));
+        assertThat(removedHeader.get(), equalTo("Boo"));
     }
 
     @Test
