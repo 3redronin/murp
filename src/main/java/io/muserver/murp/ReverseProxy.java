@@ -31,15 +31,21 @@ public class ReverseProxy implements MuHandler {
     /**
      * An unmodifiable set of the Hop By Hop headers. All are in lowercase.
      */
-    public static final Set<String> HOP_BY_HOP_HEADERS = Collections.unmodifiableSet(new HashSet<>(asList(
-            "keep-alive", "transfer-encoding", "te", "connection", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate")));
+    public static final Set<String> HOP_BY_HOP_HEADERS = Set.of(
+        "keep-alive", "transfer-encoding", "te", "connection", "trailer", "upgrade",
+        "proxy-authorization", "proxy-authenticate");
+
+    private static final Set<String> HTTP_2_PSEUDO_HEADERS = Set.of(
+        ":method", ":path", ":authority", ":scheme", ":status"
+    );
 
     private static final Set<String> REPRESSED;
 
     static {
         REPRESSED = new HashSet<>(HOP_BY_HOP_HEADERS);
         REPRESSED.addAll(new HashSet<>(asList(
-                "forwarded", "x-forwarded-by", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port", "x-forwarded-server", "via", "expect"
+            "forwarded", "x-forwarded-by", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto",
+            "x-forwarded-port", "x-forwarded-server", "via", "expect"
         )));
 
         String ip;
@@ -85,7 +91,9 @@ public class ReverseProxy implements MuHandler {
         additionalDoNotProxyHeaders.forEach(h -> this.doNotProxyToTarget.add(h.toLowerCase()));
     }
 
-    /** {@inheritDoc} */
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public boolean handle(MuRequest clientRequest, MuResponse clientResponse) throws Exception {
         URI target = uriMapper.mapFrom(clientRequest);
@@ -95,6 +103,8 @@ public class ReverseProxy implements MuHandler {
 
         final long start = System.currentTimeMillis();
         final AsyncHandle asyncHandle = clientRequest.handleAsync();
+
+        final String clientRequestProtocol = clientRequest.protocol();
 
         clientResponse.headers().remove(HeaderNames.DATE); // so that the target's date can be used
 
@@ -123,7 +133,7 @@ public class ReverseProxy implements MuHandler {
             }
 
             CompletableFuture<HttpResponse<Void>> targetResponse = targetResponseFutureRef.get();
-            if (error!= null && targetResponse != null && !targetResponse.isDone()) {
+            if (error != null && targetResponse != null && !targetResponse.isDone()) {
                 log.info("cancelling target request for {}", clientRequest);
                 targetResponse.cancel(true);
             }
@@ -161,7 +171,7 @@ public class ReverseProxy implements MuHandler {
                                     // throw NullPointerException and cancel the subscription
                                     asyncHandle.setReadListener(new RequestBodyListener() {
                                         @Override
-                                        public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) throws Exception {
+                                        public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) {
                                             doneCallbacks.add(doneCallback);
                                             subscriber.onNext(byteBuffer);
                                         }
@@ -210,10 +220,10 @@ public class ReverseProxy implements MuHandler {
         }
 
         HttpRequest.Builder targetReq = HttpRequest.newBuilder()
-                .uri(target)
-                .method(clientRequest.method().toString(), bodyPublisher);
+            .uri(target)
+            .method(clientRequest.method().toString(), bodyPublisher);
 
-        String viaValue = clientRequest.protocol() + " " + viaName;
+        String viaValue = clientRequestProtocol + " " + viaName;
         setTargetRequestHeaders(clientRequest, targetReq, discardClientForwardedHeaders, sendLegacyForwardedHeaders, viaValue, doNotProxyToTarget);
 
 
@@ -229,6 +239,9 @@ public class ReverseProxy implements MuHandler {
                         String header = headerEntry.getKey();
                         String lowerName = header.toLowerCase();
                         if (HOP_BY_HOP_HEADERS.contains(lowerName)) {
+                            continue;
+                        }
+                        if (!"HTTP/2.0".equals(clientRequestProtocol) && HTTP_2_PSEUDO_HEADERS.contains(lowerName)) {
                             continue;
                         }
                         clientResponse.headers().add(header, value);
@@ -304,21 +317,21 @@ public class ReverseProxy implements MuHandler {
         targetResponseFutureRef.set(httpClient.sendAsync(targetRequest, bh));
 
         targetResponseFutureRef.get()
-                .orTimeout(totalTimeoutInMillis, TimeUnit.MILLISECONDS)
-                .whenComplete((voidHttpResponse, throwable) -> {
+            .orTimeout(totalTimeoutInMillis, TimeUnit.MILLISECONDS)
+            .whenComplete((voidHttpResponse, throwable) -> {
 
-                    long duration = System.currentTimeMillis() - start;
+                long duration = System.currentTimeMillis() - start;
 
-                    closeClientRequest.accept(throwable);
+                closeClientRequest.accept(throwable);
 
-                    for (ProxyCompleteListener proxyCompleteListener : proxyCompleteListeners) {
-                        try {
-                            proxyCompleteListener.onComplete(clientRequest, clientResponse, target, duration);
-                        } catch (Exception e) {
-                            log.warn("proxyCompleteListener error", e);
-                        }
+                for (ProxyCompleteListener proxyCompleteListener : proxyCompleteListeners) {
+                    try {
+                        proxyCompleteListener.onComplete(clientRequest, clientResponse, target, duration);
+                    } catch (Exception e) {
+                        log.warn("proxyCompleteListener error", e);
                     }
-                });
+                }
+            });
 
         return true;
     }

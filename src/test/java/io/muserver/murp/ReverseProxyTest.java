@@ -111,7 +111,7 @@ public class ReverseProxyTest {
         assertThat(headers.firstValue("Content-Length").orElse(""), is(notNullValue()));
         assertThat(headers.firstValue("Via").orElse(""), is("HTTP/1.1 private"));
         assertThat(headers.firstValue("Forwarded").isEmpty(), is(true));
-        assertThat(someText.body(), is("Hello: " + bodyBuilder.toString()));
+        assertThat(someText.body(), is("Hello: " + bodyBuilder));
         assertThat("Timed out waiting for notification",
             notificationAddedLatch.await(10, TimeUnit.SECONDS), is(true));
         assertThat("Actual: " + notifications, notifications, contains("Did POST /some-text and returned a 201 from " + targetServer.uri().resolve("/some-text")));
@@ -133,12 +133,12 @@ public class ReverseProxyTest {
             .header("Accept-Encoding", "hmm, gzip, deflate"))) { // custom header stops okhttpclient from hiding gzip
             assertThat(resp.code(), is(200));
             assertThat(resp.header("content-encoding"), is("gzip"));
-            String expected = new String(Files.readAllBytes(Paths.get("pom.xml")), UTF_8);
+            String expected = Files.readString(Paths.get("pom.xml"));
             String unzipped;
             try (ByteArrayOutputStream boas = new ByteArrayOutputStream();
                  InputStream is = new GZIPInputStream(resp.body().byteStream())) {
                 Mutils.copy(is, boas, 8192);
-                unzipped = boas.toString("UTF-8");
+                unzipped = boas.toString(UTF_8);
             }
             assertThat(unzipped, equalTo(expected));
         }
@@ -174,7 +174,7 @@ public class ReverseProxyTest {
     }
 
     @Test
-    public void itCanProxyPieceByPiece() throws InterruptedException, ExecutionException, TimeoutException, IOException {
+    public void itCanProxyPieceByPiece() throws InterruptedException, IOException {
         String m1 = StringUtils.randomAsciiStringOfLength(20000);
         String m2 = StringUtils.randomAsciiStringOfLength(120000);
         String m3 = StringUtils.randomAsciiStringOfLength(20000);
@@ -199,7 +199,7 @@ public class ReverseProxyTest {
     }
 
     @Test
-    public void theHostNameProxyingCanBeTurnedOff() throws InterruptedException, ExecutionException, TimeoutException, IOException {
+    public void theHostNameProxyingCanBeTurnedOff() throws InterruptedException, IOException {
         MuServer targetServer = httpsServer()
             .addHandler(Method.GET, "/", (req, resp, pp) -> resp.write(
                 "The host header is " + req.headers().get("Host") +
@@ -260,6 +260,36 @@ public class ReverseProxyTest {
         assertThat(resp.body(), is("The Via header is [HTTP/1.1 externalrp, HTTP/1.1 internalrp]" +
             " and forwarded is https with host " + externalRP.uri().getAuthority() + ", http with host "
             + externalRP.uri().getAuthority()));
+    }
+
+    @Test
+    public void http1ClientToHttp2ServerWorks() throws Exception {
+        MuServer targetServer = httpsServer()
+            .withHttp2Config(http2EnabledIfAvailable())
+            .addHandler(Method.GET, "/", (req, resp, pp) -> {
+                String forwarded = req.headers().forwarded().stream().map(f -> f.proto() + " with host " + f.host()).collect(Collectors.joining(", "));
+                resp.write("The Via header is "
+                    + req.headers().getAll("via") + " and forwarded is " + forwarded);
+            })
+            .start();
+
+        MuServer proxy = httpsServer()
+            .withHttp2Config(http2EnabledIfAvailable())
+            .addHandler(reverseProxy()
+                .withViaName("proxy")
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+            )
+            .start();
+
+        HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
+            .uri(proxy.uri().resolve("/"))
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(resp.headers().allValues("Date"), hasSize(1));
+        assertThat(resp.headers().allValues("Via"), contains("HTTP/1.1 proxy"));
+        assertThat(resp.body(), is("The Via header is [HTTP/1.1 proxy]" +
+            " and forwarded is https with host " + proxy.uri().getAuthority()));
     }
 
     @Test
@@ -371,7 +401,7 @@ public class ReverseProxyTest {
     }
 
     @Test
-    public void canReceivedMultipleSetCookieHeaders() throws InterruptedException {
+    public void canReceivedMultipleSetCookieHeaders() {
         MuServer targetServer = httpServer()
             .addHandler(Method.GET, "/", (request, response, pp) -> {
                 response.status(200);
@@ -452,11 +482,7 @@ public class ReverseProxyTest {
 
     @Test
     public void largeHeadersCanBeConfigured() throws Exception {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < 26000; i++) {
-            sb.append("a");
-        }
-        String value = sb.toString();
+        String value = "a".repeat(26000);
         int maxHeaderSize = 32768;
         MuServer targetServer = httpServer()
             .withMaxHeadersSize(maxHeaderSize)
