@@ -12,6 +12,7 @@ import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -30,15 +31,21 @@ public class ReverseProxy implements MuHandler {
     /**
      * An unmodifiable set of the Hop By Hop headers. All are in lowercase.
      */
-    public static final Set<String> HOP_BY_HOP_HEADERS = Collections.unmodifiableSet(new HashSet<>(asList(
-            "keep-alive", "transfer-encoding", "te", "connection", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate")));
+    public static final Set<String> HOP_BY_HOP_HEADERS = Set.of(
+        "keep-alive", "transfer-encoding", "te", "connection", "trailer", "upgrade",
+        "proxy-authorization", "proxy-authenticate");
+
+    private static final Set<String> HTTP_2_PSEUDO_HEADERS = Set.of(
+        ":method", ":path", ":authority", ":scheme", ":status"
+    );
 
     private static final Set<String> REPRESSED;
 
     static {
         REPRESSED = new HashSet<>(HOP_BY_HOP_HEADERS);
         REPRESSED.addAll(new HashSet<>(asList(
-                "forwarded", "x-forwarded-by", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port", "x-forwarded-server", "via", "expect"
+            "forwarded", "x-forwarded-by", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto",
+            "x-forwarded-port", "x-forwarded-server", "via", "expect"
         )));
 
         String ip;
@@ -84,7 +91,9 @@ public class ReverseProxy implements MuHandler {
         additionalDoNotProxyHeaders.forEach(h -> this.doNotProxyToTarget.add(h.toLowerCase()));
     }
 
-    /** {@inheritDoc} */
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public boolean handle(MuRequest clientRequest, MuResponse clientResponse) throws Exception {
         URI target = uriMapper.mapFrom(clientRequest);
@@ -95,6 +104,8 @@ public class ReverseProxy implements MuHandler {
         final long start = System.currentTimeMillis();
         final AsyncHandle asyncHandle = clientRequest.handleAsync();
 
+        final String clientRequestProtocol = clientRequest.protocol();
+
         clientResponse.headers().remove(HeaderNames.DATE); // so that the target's date can be used
 
         final long id = counter.incrementAndGet();
@@ -104,7 +115,6 @@ public class ReverseProxy implements MuHandler {
 
         AtomicReference<CompletableFuture<HttpResponse<Void>>> targetResponseFutureRef = new AtomicReference<>();
         AtomicReference<HttpRequest> targetRequestRef = new AtomicReference<>();
-        AtomicReference<HttpResponse<Void>> targetResponseRef = new AtomicReference<>();
 
         Consumer<Throwable> closeClientRequest = (error) -> {
             if (error != null) {
@@ -123,7 +133,8 @@ public class ReverseProxy implements MuHandler {
             }
 
             CompletableFuture<HttpResponse<Void>> targetResponse = targetResponseFutureRef.get();
-            if (targetResponse != null && !targetResponse.isDone()) {
+            if (error != null && targetResponse != null && !targetResponse.isDone()) {
+                log.info("cancelling target request for {}", clientRequest);
                 targetResponse.cancel(true);
             }
         };
@@ -135,48 +146,63 @@ public class ReverseProxy implements MuHandler {
                 @Override
                 public void subscribe(Flow.Subscriber<? super ByteBuffer> subscriber) {
 
-                    ConcurrentLinkedDeque<DoneCallback> doneCallbacks = new ConcurrentLinkedDeque<>();
+                    try {
+                        ConcurrentLinkedDeque<DoneCallback> doneCallbacks = new ConcurrentLinkedDeque<>();
+                        AtomicBoolean isFirst = new AtomicBoolean(true);
 
-                    subscriber.onSubscribe(new Flow.Subscription() {
-                        @Override
-                        public void request(long n) {
-                            DoneCallback doneCallback = doneCallbacks.poll();
-                            if (doneCallback != null) {
-                                try {
-                                    doneCallback.onComplete(null);
-                                } catch (Exception e) {
-                                    log.warn("onComplete failed", e);
-                                    this.cancel();
+                        subscriber.onSubscribe(new Flow.Subscription() {
+                            @Override
+                            public void request(long n) {
+
+                                DoneCallback doneCallback = doneCallbacks.poll();
+                                if (doneCallback != null) {
+                                    try {
+                                        doneCallback.onComplete(null);
+                                    } catch (Exception e) {
+                                        log.warn("onComplete failed", e);
+                                        this.cancel();
+                                    }
+                                }
+
+                                if (isFirst.compareAndSet(true, false)) {
+
+                                    // start reading client body only after target subscription established
+                                    // otherwise calling `subscriber.onNext(byteBuffer)` will sometimes cause JDK http client
+                                    // throw NullPointerException and cancel the subscription
+                                    asyncHandle.setReadListener(new RequestBodyListener() {
+                                        @Override
+                                        public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) {
+                                            doneCallbacks.add(doneCallback);
+                                            subscriber.onNext(byteBuffer);
+                                        }
+
+                                        @Override
+                                        public void onComplete() {
+                                            subscriber.onComplete();
+                                        }
+
+                                        @Override
+                                        public void onError(Throwable throwable) {
+                                            // cancel the target request
+                                            subscriber.onError(throwable);
+                                            closeClientRequest.accept(new RuntimeException("request body read error"));
+                                        }
+                                    });
                                 }
                             }
-                        }
 
-                        @Override
-                        public void cancel() {
-                            closeClientRequest.accept(new RuntimeException("request body send cancel"));
-                        }
-                    });
+                            @Override
+                            public void cancel() {
+                                closeClientRequest.accept(new RuntimeException("request body send cancel"));
+                            }
+                        });
 
-                    // start to read body
-                    asyncHandle.setReadListener(new RequestBodyListener() {
-                        @Override
-                        public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) throws Exception {
-                            doneCallbacks.add(doneCallback);
-                            subscriber.onNext(byteBuffer);
-                        }
 
-                        @Override
-                        public void onComplete() {
-                            subscriber.onComplete();
-                        }
+                    } catch (Throwable throwable) {
+                        log.info("body subscribe error", throwable);
+                        throw throwable;
+                    }
 
-                        @Override
-                        public void onError(Throwable throwable) {
-                            // cancel the target request
-                            subscriber.onError(throwable);
-                            closeClientRequest.accept(new RuntimeException("request body read error"));
-                        }
-                    });
                 }
 
                 @Override
@@ -194,10 +220,10 @@ public class ReverseProxy implements MuHandler {
         }
 
         HttpRequest.Builder targetReq = HttpRequest.newBuilder()
-                .uri(target)
-                .method(clientRequest.method().toString(), bodyPublisher);
+            .uri(target)
+            .method(clientRequest.method().toString(), bodyPublisher);
 
-        String viaValue = clientRequest.protocol() + " " + viaName;
+        String viaValue = clientRequestProtocol + " " + viaName;
         setTargetRequestHeaders(clientRequest, targetReq, discardClientForwardedHeaders, sendLegacyForwardedHeaders, viaValue, doNotProxyToTarget);
 
 
@@ -215,7 +241,10 @@ public class ReverseProxy implements MuHandler {
                         if (HOP_BY_HOP_HEADERS.contains(lowerName)) {
                             continue;
                         }
-                        clientResponse.headers().set(header, value);
+                        if (!"HTTP/2.0".equals(clientRequestProtocol) && HTTP_2_PSEUDO_HEADERS.contains(lowerName)) {
+                            continue;
+                        }
+                        clientResponse.headers().add(header, value);
                     }
                 }
 
@@ -224,7 +253,7 @@ public class ReverseProxy implements MuHandler {
 
                 if (responseInterceptor != null) {
                     try {
-                        responseInterceptor.intercept(clientRequest, targetRequestRef.get(), targetResponseRef.get(), clientResponse);
+                        responseInterceptor.intercept(clientRequest, targetRequestRef.get(), responseInfo, clientResponse);
                     } catch (Exception e) {
                         log.info("responseInterceptor error", e);
                     }
@@ -288,23 +317,21 @@ public class ReverseProxy implements MuHandler {
         targetResponseFutureRef.set(httpClient.sendAsync(targetRequest, bh));
 
         targetResponseFutureRef.get()
-                .orTimeout(totalTimeoutInMillis, TimeUnit.MILLISECONDS)
-                .whenComplete((voidHttpResponse, throwable) -> {
+            .orTimeout(totalTimeoutInMillis, TimeUnit.MILLISECONDS)
+            .whenComplete((voidHttpResponse, throwable) -> {
 
-                    targetResponseRef.set(voidHttpResponse);
+                long duration = System.currentTimeMillis() - start;
 
-                    long duration = System.currentTimeMillis() - start;
+                closeClientRequest.accept(throwable);
 
-                    closeClientRequest.accept(throwable);
-
-                    for (ProxyCompleteListener proxyCompleteListener : proxyCompleteListeners) {
-                        try {
-                            proxyCompleteListener.onComplete(clientRequest, clientResponse, target, duration);
-                        } catch (Exception e) {
-                            log.warn("proxyCompleteListener error", e);
-                        }
+                for (ProxyCompleteListener proxyCompleteListener : proxyCompleteListeners) {
+                    try {
+                        proxyCompleteListener.onComplete(clientRequest, clientResponse, target, duration);
+                    } catch (Exception e) {
+                        log.warn("proxyCompleteListener error", e);
                     }
-                });
+                }
+            });
 
         return true;
     }
