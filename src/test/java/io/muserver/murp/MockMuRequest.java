@@ -2,7 +2,6 @@ package io.muserver.murp;
 
 import io.muserver.*;
 
-import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.util.List;
@@ -10,7 +9,7 @@ import java.util.Map;
 import java.util.Optional;
 
 public class MockMuRequest implements MuRequest {
-    private URI requestUri;
+    private final URI requestUri;
 
     public MockMuRequest(URI uri) {
         this.requestUri = uri;
@@ -52,17 +51,17 @@ public class MockMuRequest implements MuRequest {
     }
 
     @Override
-    public String readBodyAsString() throws IOException {
+    public String readBodyAsString() {
         return null;
     }
 
     @Override
-    public List<UploadedFile> uploadedFiles(String name) throws IOException {
+    public List<UploadedFile> uploadedFiles(String name) {
         return null;
     }
 
     @Override
-    public UploadedFile uploadedFile(String name) throws IOException {
+    public UploadedFile uploadedFile(String name) {
         return null;
     }
 
@@ -72,27 +71,7 @@ public class MockMuRequest implements MuRequest {
     }
 
     @Override
-    public RequestParameters form() throws IOException {
-        return null;
-    }
-
-    @Override
-    public String parameter(String name) {
-        return null;
-    }
-
-    @Override
-    public List<String> parameters(String name) {
-        return null;
-    }
-
-    @Override
-    public String formValue(String name) throws IOException {
-        return null;
-    }
-
-    @Override
-    public List<String> formValues(String name) throws IOException {
+    public RequestParameters form() {
         return null;
     }
 
@@ -114,16 +93,6 @@ public class MockMuRequest implements MuRequest {
     @Override
     public String relativePath() {
         return null;
-    }
-
-    @Override
-    public Object state() {
-        return null;
-    }
-
-    @Override
-    public void state(Object value) {
-
     }
 
     @Override
