@@ -271,18 +271,24 @@ public class ReverseProxy implements MuHandler {
                     }
 
                     @Override
-                    public void onNext(List<ByteBuffer> item) {
-                        for (ByteBuffer byteBuffer : item) {
+                    public void onNext(List<ByteBuffer> buffers) {
+
+                        final int[] counter = new int[]{0};
+                        final int total = buffers.size();
+
+                        for (ByteBuffer buffer : buffers) {
                             if (clientResponse.responseState().endState()) {
                                 subscription.cancel();
                                 return;
                             }
-                            asyncHandle.write(byteBuffer, throwable -> {
+                            asyncHandle.write(buffer, throwable -> {
                                 if (throwable != null) {
                                     onError(throwable);
                                     return;
                                 }
-                                subscription.request(1);
+                                if (++counter[0] >= total) {
+                                    subscription.request(1);
+                                }
                             });
                         }
                     }
