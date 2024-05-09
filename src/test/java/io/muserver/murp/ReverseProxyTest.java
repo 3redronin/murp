@@ -144,6 +144,69 @@ public class ReverseProxyTest {
         }
     }
 
+    @Test
+    public void canSendLegacyForwardHeaders() throws IOException, InterruptedException {
+        MuServer targetServer = httpsServer()
+            .addHandler(Method.GET, "/", (req, resp, pp) -> resp.write(
+                "The host header is " + req.headers().get("Host") +
+                    " and the Via header is "
+                    + req.headers().getAll("via")
+                    + " and forwarded is " + ForwardedHeader.toString(req.headers().forwarded())
+                    + " and x-forwarded-proto is " + req.headers().get(HeaderNames.X_FORWARDED_PROTO.toString())
+                    + " and x-forwarded-host is " + req.headers().get(HeaderNames.X_FORWARDED_HOST.toString())
+                    + " and x-forwarded-for is " + req.headers().get(HeaderNames.X_FORWARDED_FOR.toString())
+            ))
+            .start();
+
+        MuServer reverseProxyServer = httpServer()
+            .addHandler(reverseProxy()
+                .withViaName("blardorph")
+                .sendLegacyForwardedHeaders(true)
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+            )
+            .start();
+
+        // test full forwarded header
+        HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/"))
+            .header("Forwarded", "for=192.0.2.60;proto=http;host=203.0.113.43")
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(resp.body(), endsWith("x-forwarded-proto is http " +
+            "and x-forwarded-host is 203.0.113.43 " +
+            "and x-forwarded-for is 192.0.2.60"));
+
+        // test missing host
+        HttpResponse<String> resp1 = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/"))
+            .header("Forwarded", "for=192.0.2.60;proto=http")
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(resp1.body(), endsWith("x-forwarded-proto is http " +
+            "and x-forwarded-host is null " +
+            "and x-forwarded-for is 192.0.2.60"));
+
+        // test missing for
+        HttpResponse<String> resp2 = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/"))
+            .header("Forwarded", "proto=http;host=203.0.113.43")
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(resp2.body(), endsWith("x-forwarded-proto is http " +
+            "and x-forwarded-host is 203.0.113.43 " +
+            "and x-forwarded-for is null"));
+
+        // test missing proto
+        HttpResponse<String> resp3 = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/"))
+            .header("Forwarded", "for=192.0.2.60;host=203.0.113.43")
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(resp3.body(), endsWith("x-forwarded-proto is null " +
+            "and x-forwarded-host is 203.0.113.43 " +
+            "and x-forwarded-for is 192.0.2.60"));
+
+    }
 
     @Test
     public void viaHeadersCanBeSet() throws Exception {

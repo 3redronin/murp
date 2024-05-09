@@ -418,9 +418,19 @@ public class ReverseProxy implements MuHandler {
      * @param forwardedHeader The forwarded header that has the original client information on it.
      */
     private static void setXForwardedHeaders(HttpRequest.Builder targetRequest, ForwardedHeader forwardedHeader) {
-        targetRequest.header(HeaderNames.X_FORWARDED_PROTO.toString(), forwardedHeader.proto());
-        targetRequest.header(HeaderNames.X_FORWARDED_HOST.toString(), forwardedHeader.host());
-        targetRequest.header(HeaderNames.X_FORWARDED_FOR.toString(), forwardedHeader.forValue());
+        if (forwardedHeader == null) return;
+        String proto = forwardedHeader.proto();
+        if (proto != null) {
+            targetRequest.header(HeaderNames.X_FORWARDED_PROTO.toString(), proto);
+        }
+        String host = forwardedHeader.host();
+        if (host != null) {
+            targetRequest.header(HeaderNames.X_FORWARDED_HOST.toString(), host);
+        }
+        String forValue = forwardedHeader.forValue();
+        if (forValue != null) {
+            targetRequest.header(HeaderNames.X_FORWARDED_FOR.toString(), forValue);
+        }
     }
 
     /**
