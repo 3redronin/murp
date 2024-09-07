@@ -2,6 +2,10 @@ package io.muserver.murp;
 
 import io.muserver.*;
 import io.muserver.handlers.ResourceHandlerBuilder;
+import okhttp3.MediaType;
+import okhttp3.MultipartBody;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 import okhttp3.sse.EventSource;
 import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
@@ -12,9 +16,8 @@ import scaffolding.MuAssert;
 import scaffolding.RawClient;
 import scaffolding.StringUtils;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
+import java.math.BigInteger;
 import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
@@ -22,9 +25,13 @@ import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -39,6 +46,7 @@ import static io.muserver.MuServerBuilder.httpsServer;
 import static io.muserver.murp.ReverseProxyBuilder.createHttpClientBuilder;
 import static io.muserver.murp.ReverseProxyBuilder.reverseProxy;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
 import static scaffolding.ClientUtils.call;
@@ -142,6 +150,73 @@ public class ReverseProxyTest {
             }
             assertThat(unzipped, equalTo(expected));
         }
+    }
+
+    public static String md5(byte[] data) throws NoSuchAlgorithmException {
+        byte[] hash = MessageDigest.getInstance("MD5").digest(data);
+        return new BigInteger(1, hash).toString(16);
+    }
+
+    public static File createRandomFile(File target, long targetSize) throws IOException {
+        Random random = new Random();
+        byte[] buffer = new byte[1024];
+        long written = 0;
+
+        try (FileOutputStream output = new FileOutputStream(target)) {
+            while (written < targetSize) {
+                long toWrite = Math.min(buffer.length, targetSize - written);
+                random.nextBytes(buffer);
+                output.write(buffer, 0, (int) toWrite);
+                written += toWrite;
+            }
+        }
+        return target;
+    }
+
+    @Test
+    public void canProxyFileUpload() throws Exception {
+
+        // create a file as 10M
+        File upload = createRandomFile(Paths.get("target", "upload.txt").toFile(), 10 * 1024 * 1024);
+        byte[] uploadBytes = Files.readAllBytes(upload.toPath());
+        String rawCheckSum = md5(uploadBytes);
+
+        MuServer targetServer = httpServer()
+            .addHandler(Method.POST, "/upload", (request, response, pathParams) -> {
+                UploadedFile uploadFile = request.uploadedFile("uploadFile");
+
+                Path received = Paths.get("target", "received.txt");
+                Files.write(received, uploadFile.asBytes());
+
+                response.sendChunk(uploadFile.filename() + " length is " + uploadFile.asBytes().length + " bytes\n");
+                response.sendChunk("md5: " + md5(Files.readAllBytes(received.toFile().toPath())));
+
+            })
+            .start();
+
+        MuServer reverseProxyServer = httpsServer()
+            .addHandler(reverseProxy().withUriMapper(UriMapper.toDomain(targetServer.uri())))
+            .start();
+
+        for (int i = 0; i < 100; i++) {
+            try (Response resp = call(request(reverseProxyServer.uri().resolve("/upload"))
+                .post(new MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addPart(okhttp3.Headers.of("Content-Disposition", "form-data; name=\"uploadFile\"; filename=\"" + upload.getName() + "\""),
+                        RequestBody.create(upload, MediaType.parse("application/vnd.android.package-archive")))
+                    .build())
+            )) {
+                assertThat(resp.code(), is(200));
+                assertThat(resp.body().string(), is(
+                    upload.getName() + " length is " + uploadBytes.length + " bytes\n" +
+                        "md5: " + rawCheckSum));
+            }
+
+            System.out.println("success " + i);
+
+        }
+
+
     }
 
     @Test

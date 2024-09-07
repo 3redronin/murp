@@ -173,7 +173,15 @@ public class ReverseProxy implements MuHandler {
                                         @Override
                                         public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) {
                                             doneCallbacks.add(doneCallback);
-                                            subscriber.onNext(byteBuffer);
+
+                                            // bug fix : upload file random broken - (some of the bytes changed)
+                                            // clone the byteBuffer to avoid it's being modified after passing into subscriber.onNext()
+                                            int capacity = byteBuffer.remaining();
+                                            ByteBuffer copy = byteBuffer.isDirect() ? ByteBuffer.allocateDirect(capacity) : ByteBuffer.allocate(capacity);
+                                            copy.put(byteBuffer);
+                                            copy.rewind();
+
+                                            subscriber.onNext(copy);
                                         }
 
                                         @Override
