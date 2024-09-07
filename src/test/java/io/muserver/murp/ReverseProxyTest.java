@@ -1,10 +1,11 @@
 package io.muserver.murp;
 
 import io.muserver.*;
-import io.muserver.Cookie;
-import io.muserver.Headers;
 import io.muserver.handlers.ResourceHandlerBuilder;
-import okhttp3.*;
+import okhttp3.MediaType;
+import okhttp3.MultipartBody;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 import okhttp3.sse.EventSource;
 import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
@@ -30,6 +31,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -150,30 +152,44 @@ public class ReverseProxyTest {
         }
     }
 
-    public String md5(byte[] data) throws IOException, NoSuchAlgorithmException {
+    public static String md5(byte[] data) throws NoSuchAlgorithmException {
         byte[] hash = MessageDigest.getInstance("MD5").digest(data);
         return new BigInteger(1, hash).toString(16);
+    }
+
+    public static File createRandomFile(File target, long targetSize) throws IOException {
+        Random random = new Random();
+        byte[] buffer = new byte[1024];
+        long written = 0;
+
+        try (FileOutputStream output = new FileOutputStream(target)) {
+            while (written < targetSize) {
+                long toWrite = Math.min(buffer.length, targetSize - written);
+                random.nextBytes(buffer);
+                output.write(buffer, 0, (int) toWrite);
+                written += toWrite;
+            }
+        }
+        return target;
     }
 
     @Test
     public void canProxyFileUpload() throws Exception {
 
-        // change the file to a bigger one if needed
-        File upload = new File("pom.xml");
+        // create a file as 10M
+        File upload = createRandomFile(Paths.get("target", "upload.txt").toFile(), 10 * 1024 * 1024);
         byte[] uploadBytes = Files.readAllBytes(upload.toPath());
         String rawCheckSum = md5(uploadBytes);
-
-        System.out.println("raw md5:" + rawCheckSum);
 
         MuServer targetServer = httpServer()
             .addHandler(Method.POST, "/upload", (request, response, pathParams) -> {
                 UploadedFile uploadFile = request.uploadedFile("uploadFile");
 
-                Path storePath = Paths.get("target", uploadFile.filename());
-                Files.write(storePath, uploadFile.asBytes());
+                Path received = Paths.get("target", "received.txt");
+                Files.write(received, uploadFile.asBytes());
 
-                response.sendChunk(uploadFile.filename() + " is " + uploadFile.asBytes().length + " bytes\n");
-                response.sendChunk("md5: " + md5(Files.readAllBytes(storePath.toFile().toPath())));
+                response.sendChunk(uploadFile.filename() + " length is " + uploadFile.asBytes().length + " bytes\n");
+                response.sendChunk("md5: " + md5(Files.readAllBytes(received.toFile().toPath())));
 
             })
             .start();
@@ -192,7 +208,7 @@ public class ReverseProxyTest {
             )) {
                 assertThat(resp.code(), is(200));
                 assertThat(resp.body().string(), is(
-                    upload.getName() + " is " + uploadBytes.length + " bytes\n" +
+                    upload.getName() + " length is " + uploadBytes.length + " bytes\n" +
                         "md5: " + rawCheckSum));
             }
 
