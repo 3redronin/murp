@@ -1,8 +1,7 @@
 package io.muserver.murp;
 
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
+import javax.net.ssl.*;
+import java.net.Socket;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -64,19 +63,49 @@ class HttpClientUtils {
     private static void trustAll(HttpClient.Builder builder) {
         try {
             final TrustManager[] trustAllCerts = new TrustManager[]{
-                new X509TrustManager() {
-                    @Override
-                    public void checkClientTrusted(X509Certificate[] chain, String authType) {
+                new X509ExtendedTrustManager()
+                {
+                    public X509Certificate[] getAcceptedIssuers()
+                    {
+                        return null;
                     }
-                    @Override
-                    public void checkServerTrusted(X509Certificate[] chain, String authType) {
+
+                    public void checkClientTrusted(
+                        final X509Certificate[] a_certificates,
+                        final String a_auth_type)
+                    {
                     }
-                    @Override
-                    public X509Certificate[] getAcceptedIssuers() {
-                        return new X509Certificate[0];
+
+                    public void checkServerTrusted(
+                        final X509Certificate[] a_certificates,
+                        final String a_auth_type)
+                    {
                     }
-                }
-            };
+                    public void checkClientTrusted(
+                        final X509Certificate[] a_certificates,
+                        final String a_auth_type,
+                        final Socket a_socket)
+                    {
+                    }
+                    public void checkServerTrusted(
+                        final X509Certificate[] a_certificates,
+                        final String a_auth_type,
+                        final Socket a_socket)
+                    {
+                    }
+                    public void checkClientTrusted(
+                        final X509Certificate[] a_certificates,
+                        final String a_auth_type,
+                        final SSLEngine a_engine)
+                    {
+                    }
+                    public void checkServerTrusted(
+                        final X509Certificate[] a_certificates,
+                        final String a_auth_type,
+                        final SSLEngine a_engine)
+                    {
+                    }
+                }            };
             SSLContext sslContext = SSLContext.getInstance("SSL");
             sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
             builder.sslContext(sslContext);
