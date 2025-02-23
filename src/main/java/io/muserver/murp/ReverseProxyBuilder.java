@@ -37,6 +37,7 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
     private final Set<String> doNotProxyHeaders = new HashSet<>();
     private RequestInterceptor requestInterceptor;
     private ResponseInterceptor responseInterceptor;
+    private ProxyListener proxyListener;
 
     private ReverseProxyBuilder() {}
 
@@ -103,7 +104,7 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
     }
 
     /**
-     * <p>Specifies whether or not to send the original <code>Host</code> header to the target server.</p>
+     * <p>Specifies whether to send the original <code>Host</code> header to the target server.</p>
      * <p>Reverse proxies are generally supposed to forward the original <code>Host</code> header to target
      * servers, however there are cases (particularly where you are proxying to HTTPS servers) that the
      * Host needs to match the Host of the SSL certificate (in which case you may see SNI-related errors).</p>
@@ -201,6 +202,19 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
         return this;
     }
 
+
+    /**
+     * Adds a proxy listener to observe the life cycle of a request, it's useful for debug or metric
+     *
+     * @param proxyListener proxy listener
+     * @return This builder.
+     */
+    public ReverseProxyBuilder withProxyListener(ProxyListener proxyListener) {
+        this.proxyListener = proxyListener;
+        return this;
+    }
+
+
     /**
      * Creates and returns a new instance of a reverse proxy builder.
      *
@@ -242,6 +256,6 @@ public class ReverseProxyBuilder implements MuHandlerBuilder<ReverseProxy> {
 
         return new ReverseProxy(client, uriMapper, totalTimeoutInMillis, proxyCompleteListeners, viaName,
                 discardClientForwardedHeaders, sendLegacyForwardedHeaders, doNotProxyHeaders,
-                requestInterceptor, responseInterceptor);
+                requestInterceptor, responseInterceptor, proxyListener);
     }
 }

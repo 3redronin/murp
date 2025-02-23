@@ -53,7 +53,7 @@ public class ReverseProxy implements MuHandler {
             ip = InetAddress.getLocalHost().getHostAddress();
         } catch (Exception e) {
             ip = "unknown";
-            log.info("Could not fine local address so using " + ip);
+            log.info("Could not fine local address so using {}", ip);
         }
         ipAddress = ip;
     }
@@ -74,10 +74,11 @@ public class ReverseProxy implements MuHandler {
     private final boolean sendLegacyForwardedHeaders;
     private final RequestInterceptor requestInterceptor;
     private final ResponseInterceptor responseInterceptor;
+    private final ProxyListener proxyListener;
 
     ReverseProxy(HttpClient httpClient, UriMapper uriMapper, long totalTimeoutInMillis, List<ProxyCompleteListener> proxyCompleteListeners,
                  String viaName, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders,
-                 Set<String> additionalDoNotProxyHeaders, RequestInterceptor requestInterceptor, ResponseInterceptor responseInterceptor) {
+                 Set<String> additionalDoNotProxyHeaders, RequestInterceptor requestInterceptor, ResponseInterceptor responseInterceptor, ProxyListener proxyListener) {
         this.httpClient = httpClient;
         this.uriMapper = uriMapper;
         this.totalTimeoutInMillis = totalTimeoutInMillis;
@@ -87,6 +88,7 @@ public class ReverseProxy implements MuHandler {
         this.sendLegacyForwardedHeaders = sendLegacyForwardedHeaders;
         this.requestInterceptor = requestInterceptor;
         this.responseInterceptor = responseInterceptor;
+        this.proxyListener = proxyListener;
         this.doNotProxyToTarget.addAll(REPRESSED);
         additionalDoNotProxyHeaders.forEach(h -> this.doNotProxyToTarget.add(h.toLowerCase()));
     }
@@ -110,7 +112,7 @@ public class ReverseProxy implements MuHandler {
 
         final long id = counter.incrementAndGet();
         if (log.isDebugEnabled()) {
-            log.debug("[" + id + "] Proxying from " + clientRequest.uri() + " to " + target);
+            log.debug("[{}] Proxying from {} to {}", id, clientRequest.uri(), target);
         }
 
         AtomicReference<CompletableFuture<HttpResponse<Void>>> targetResponseFutureRef = new AtomicReference<>();
@@ -118,7 +120,7 @@ public class ReverseProxy implements MuHandler {
 
         Consumer<Throwable> closeClientRequest = (error) -> {
             if (error != null) {
-                log.warn("error detected for " + clientRequest, error);
+                log.warn("error detected for {}", clientRequest, error);
             }
 
             if (error != null && !clientResponse.hasStartedSendingData()) {
@@ -154,6 +156,7 @@ public class ReverseProxy implements MuHandler {
                             @Override
                             public void request(long n) {
 
+                                long[] totalBytesCount = new long[]{0L};
                                 DoneCallback doneCallback = doneCallbacks.poll();
                                 if (doneCallback != null) {
                                     try {
@@ -172,21 +175,54 @@ public class ReverseProxy implements MuHandler {
                                     asyncHandle.setReadListener(new RequestBodyListener() {
                                         @Override
                                         public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) {
-                                            doneCallbacks.add(doneCallback);
 
-                                            // bug fix : upload file random broken - (some of the bytes changed)
+                                            doneCallbacks.add(doneCallback);
+                                            ByteBuffer copy = cloneByteBuffer(byteBuffer);
+
+                                            int position = copy.position();
+                                            int remaining = copy.remaining();
+
+                                            if (proxyListener != null) {
+                                                try {
+                                                    proxyListener.onBeforeRequestBodyChunkSentToTarget(clientRequest, clientResponse, copy.position(position));
+                                                } catch (Exception e) {
+                                                    log.warn("proxyListener.onBeforeRequestBodyChunkSentToTarget failed", e);
+                                                }
+                                            }
+
+                                            subscriber.onNext(copy.position(position));
+                                            totalBytesCount[0] += remaining;
+
+                                            if (proxyListener != null) {
+                                                try {
+                                                    proxyListener.onRequestBodyChunkSentToTarget(clientRequest, clientResponse, copy.position(position));
+                                                } catch (Exception e) {
+                                                    log.warn("proxyListener.onBeforeRequestBodyChunkSentToTarget failed", e);
+                                                }
+                                            }
+                                        }
+
+                                        private ByteBuffer cloneByteBuffer(ByteBuffer byteBuffer) {
+                                            // bug fix : upload file random broken - (some of the bytes disordered)
                                             // clone the byteBuffer to avoid it's being modified after passing into subscriber.onNext()
                                             int capacity = byteBuffer.remaining();
                                             ByteBuffer copy = byteBuffer.isDirect() ? ByteBuffer.allocateDirect(capacity) : ByteBuffer.allocate(capacity);
                                             copy.put(byteBuffer);
                                             copy.rewind();
-
-                                            subscriber.onNext(copy);
+                                            return copy;
                                         }
 
                                         @Override
                                         public void onComplete() {
                                             subscriber.onComplete();
+
+                                            if (proxyListener != null) {
+                                                try {
+                                                    proxyListener.onRequestBodyFullSentToTarget(clientRequest, clientResponse, totalBytesCount[0]);
+                                                } catch (Exception e) {
+                                                    log.warn("proxyListener.onRequestBodyFullSentToTarget failed", e);
+                                                }
+                                            }
                                         }
 
                                         @Override
@@ -268,6 +304,7 @@ public class ReverseProxy implements MuHandler {
                 }
 
                 // response body
+                long[] totalByteCount = new long[]{0L};
                 return HttpResponse.BodySubscribers.fromSubscriber(new Flow.Subscriber<>() {
 
                     private Flow.Subscription subscription;
@@ -281,19 +318,57 @@ public class ReverseProxy implements MuHandler {
                     @Override
                     public void onNext(List<ByteBuffer> buffers) {
 
+                        if (clientResponse.responseState().endState()) {
+                            subscription.cancel();
+                            onError(new RuntimeException("Error sending response data, client close early."));
+                            return;
+                        }
+
+                        if (buffers.isEmpty()) {
+                            log.warn("onNext called with empty buffers");
+                            subscription.request(1);
+                            return;
+                        }
+
                         final int[] counter = new int[]{0};
                         final int total = buffers.size();
 
                         for (ByteBuffer buffer : buffers) {
+
+                            int position = buffer.position();
+                            int remaining = buffer.remaining();
+
                             if (clientResponse.responseState().endState()) {
                                 subscription.cancel();
+                                onError(new RuntimeException("Error sending response data, client close early."));
                                 return;
                             }
-                            asyncHandle.write(buffer, throwable -> {
+
+                            if (proxyListener != null) {
+                                try {
+                                    proxyListener.onResponseBodyChunkReceivedFromTarget(clientRequest, clientResponse, buffer.position(position));
+                                } catch (Exception e) {
+                                    log.warn("proxyListener.onResponseBodyChunkReceivedFromTarget failed", e);
+                                }
+                            }
+
+                            asyncHandle.write(buffer.position(position), throwable -> {
                                 if (throwable != null) {
+                                    subscription.cancel();
                                     onError(throwable);
                                     return;
                                 }
+
+                                totalByteCount[0] += remaining;
+
+                                if (proxyListener != null) {
+                                    try {
+                                        proxyListener.onResponseBodyChunkSentToClient(clientRequest, clientResponse, buffer.position(position));
+                                    } catch (Exception e) {
+                                        log.warn("proxyListener.onResponseBodyChunkSentToClient failed", e);
+                                    }
+                                }
+
                                 if (++counter[0] >= total) {
                                     subscription.request(1);
                                 }
@@ -309,6 +384,19 @@ public class ReverseProxy implements MuHandler {
                     @Override
                     public void onComplete() {
                         targetResponseFutureRef.set(null);
+
+                        if (proxyListener != null) {
+                            asyncHandle.addResponseCompleteHandler((info) -> {
+                                if (info.completedSuccessfully()) {
+                                    try {
+                                        proxyListener.onResponseBodyChunkFullSentToClient(clientRequest, clientResponse, totalByteCount[0]);
+                                    } catch (Exception e) {
+                                        log.warn("proxyListener.onResponseBodyChunkFullSentToClient failed", e);
+                                    }
+                                }
+                            });
+                        }
+
                         asyncHandle.complete();
                     }
                 });

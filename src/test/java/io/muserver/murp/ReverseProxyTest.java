@@ -11,6 +11,8 @@ import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
 import org.junit.Assume;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import scaffolding.ClientUtils;
 import scaffolding.MuAssert;
 import scaffolding.RawClient;
@@ -36,6 +38,7 @@ import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
@@ -56,6 +59,7 @@ import static scaffolding.MuAssert.assertEventually;
 public class ReverseProxyTest {
 
     private static final HttpClient client = createHttpClientBuilder(true).build();
+    private static final Logger log = LoggerFactory.getLogger(ReverseProxyTest.class);
 
     @Test
     public void itCanProxyEverythingToATargetDomain() throws Exception {
@@ -334,6 +338,101 @@ public class ReverseProxyTest {
             .build(), HttpResponse.BodyHandlers.ofString());
 
         assertThat(resp.body(), equalTo(m1 + m2 + m3));
+    }
+
+    private ByteBuffer cloneByteBuffer(ByteBuffer byteBuffer) {
+        // bug fix : upload file random broken - (some of the bytes disordered)
+        // clone the byteBuffer to avoid it's being modified after passing into subscriber.onNext()
+        int capacity = byteBuffer.remaining();
+        ByteBuffer copy = byteBuffer.isDirect() ? ByteBuffer.allocateDirect(capacity) : ByteBuffer.allocate(capacity);
+        copy.put(byteBuffer);
+        copy.rewind();
+        return copy;
+    }
+
+    @FunctionalInterface
+    private interface ThrowingRunnable {
+        void run() throws Exception;
+    }
+
+    private void logError(ThrowingRunnable runnable) {
+        try {
+            runnable.run();
+        } catch (Exception e) {
+            log.info("Error: ", e);
+        }
+    }
+
+    @Test
+    public void itCanProxyPieceByPieceWithProxyListener() throws InterruptedException, IOException {
+        String m1 = StringUtils.randomAsciiStringOfLength(20000);
+        String m2 = StringUtils.randomAsciiStringOfLength(120000);
+        String m3 = StringUtils.randomAsciiStringOfLength(20000);
+        MuServer targetServer = httpsServer()
+            .addHandler(Method.GET, "/", (req, resp, pp) -> {
+                resp.sendChunk(m1);
+                resp.sendChunk(m2);
+                resp.sendChunk(m3);
+            })
+            .start();
+
+        AtomicInteger onResponseBodyChunkReceivedFromTargetCallCount = new AtomicInteger(0);
+        AtomicInteger onResponseBodyChunkReceivedFromTargetBytes = new AtomicInteger(0);
+        AtomicInteger onResponseBodyChunkSentToClientCallCount = new AtomicInteger(0);
+        AtomicInteger onResponseBodyChunkSentToClientBytes = new AtomicInteger(0);
+        AtomicInteger onResponseBodyChunkFullSentToClientCallCount = new AtomicInteger(0);
+        AtomicLong onResponseBodyChunkFullSentToClientBytes = new AtomicLong(0);
+
+        ByteArrayOutputStream chunkReceivedFromTarget = new ByteArrayOutputStream();
+        ByteArrayOutputStream chunkSentToClient = new ByteArrayOutputStream();
+
+        MuServer reverseProxyServer = httpServer()
+            .addHandler(reverseProxy()
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                .withProxyListener(new ProxyListener() {
+                    @Override
+                    public void onResponseBodyChunkReceivedFromTarget(MuRequest clientRequest, MuResponse clientResponse, ByteBuffer chunk) {
+                        onResponseBodyChunkReceivedFromTargetCallCount.incrementAndGet();
+                        onResponseBodyChunkReceivedFromTargetBytes.addAndGet(chunk.remaining());
+                        byte[] temp = new byte[chunk.remaining()];
+                        chunk.get(temp);
+                        logError(() -> chunkReceivedFromTarget.write(temp));
+                    }
+
+                    @Override
+                    public void onResponseBodyChunkSentToClient(MuRequest clientRequest, MuResponse clientResponse, ByteBuffer chunk) {
+                        onResponseBodyChunkSentToClientCallCount.incrementAndGet();
+                        onResponseBodyChunkSentToClientBytes.addAndGet(chunk.remaining());
+                        byte[] temp = new byte[chunk.remaining()];
+                        chunk.get(temp);
+                        logError(() -> chunkSentToClient.write(temp));
+                    }
+
+                    @Override
+                    public void onResponseBodyChunkFullSentToClient(MuRequest clientRequest, MuResponse clientResponse, long totalBodyBytes) {
+                        onResponseBodyChunkFullSentToClientCallCount.incrementAndGet();
+                        onResponseBodyChunkFullSentToClientBytes.set(totalBodyBytes);
+                    }
+                })
+            )
+            .start();
+
+
+        HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/"))
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+
+        String fullBody = m1 + m2 + m3;
+        assertThat(resp.body(), equalTo(fullBody));
+        assertThat(chunkReceivedFromTarget.toString(UTF_8), equalTo(fullBody));
+        assertThat(chunkSentToClient.toString(UTF_8), equalTo(fullBody));
+        assertThat(onResponseBodyChunkReceivedFromTargetCallCount.get(), is(greaterThan(0)));
+        assertThat(onResponseBodyChunkSentToClientCallCount.get(), is(greaterThan(0)));
+        assertThat(onResponseBodyChunkFullSentToClientCallCount.get(), is(greaterThan(0)));
+        assertThat(onResponseBodyChunkReceivedFromTargetBytes.get(), equalTo(fullBody.length()));
+        assertThat(onResponseBodyChunkSentToClientBytes.get(), equalTo(fullBody.length()));
+        assertThat(onResponseBodyChunkFullSentToClientBytes.get(), equalTo((long) fullBody.length()));
     }
 
     @Test
@@ -737,6 +836,94 @@ public class ReverseProxyTest {
         MuAssert.assertNotTimedOut("Waiting for completion", latch, 5, TimeUnit.SECONDS);
         assertThat(received.toString(), is("The sent value"));
         assertThat(resp.statusCode(), is(200));
+    }
+
+    @Test
+    public void streamedRequestBodiesWorkWithRequestProxyListener() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        StringBuilder received = new StringBuilder();
+        MuServer targetServer = httpServer()
+            .addHandler(Method.POST, "/", (req, resp, pp) -> {
+                received.append(req.readBodyAsString());
+                latch.countDown();
+            })
+            .start();
+
+        AtomicInteger onBeforeRequestBodyChunkSentToTargetCallCount = new AtomicInteger(0);
+        AtomicInteger onBeforeRequestBodyChunkSentToTargetBufferLengthCount = new AtomicInteger(0);
+        AtomicInteger onRequestBodyChunkSentToTargetCallCount = new AtomicInteger(0);
+        AtomicInteger onRequestBodyChunkSentToTargetBufferLengthCount = new AtomicInteger(0);
+        AtomicInteger onRequestBodyFullSentToTargetCallCount = new AtomicInteger(0);
+        AtomicLong totalRequestBodyBytes = new AtomicLong(0);
+
+        ByteArrayOutputStream chunkBeforeSentToTarget = new ByteArrayOutputStream();
+        ByteArrayOutputStream chunkAfterSentToTarget = new ByteArrayOutputStream();
+
+        MuServer rp = httpsServer()
+            .addHandler(reverseProxy()
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                .withProxyListener(new ProxyListener() {
+                    @Override
+                    public void onBeforeRequestBodyChunkSentToTarget(MuRequest clientRequest, MuResponse clientResponse, ByteBuffer chunk) {
+                        onBeforeRequestBodyChunkSentToTargetCallCount.incrementAndGet();
+                        onBeforeRequestBodyChunkSentToTargetBufferLengthCount.addAndGet(chunk.remaining());
+                        byte[] temp = new byte[chunk.remaining()];
+                        chunk.get(temp);
+                        logError(() -> chunkBeforeSentToTarget.write(temp));
+                    }
+
+                    @Override
+                    public void onRequestBodyChunkSentToTarget(MuRequest clientRequest, MuResponse clientResponse, ByteBuffer chunk) {
+                        onRequestBodyChunkSentToTargetCallCount.incrementAndGet();
+                        onRequestBodyChunkSentToTargetBufferLengthCount.addAndGet(chunk.remaining());
+                        byte[] temp = new byte[chunk.remaining()];
+                        chunk.get(temp);
+                        logError(() -> chunkAfterSentToTarget.write(temp));
+                    }
+
+                    @Override
+                    public void onRequestBodyFullSentToTarget(MuRequest clientRequest, MuResponse clientResponse, long totalBodyBytes) {
+                        onRequestBodyFullSentToTargetCallCount.incrementAndGet();
+                        totalRequestBodyBytes.set(totalBodyBytes);
+                    }
+                })
+            )
+            .start();
+
+        HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
+            .method("POST", HttpRequest.BodyPublishers.fromPublisher(subscriber -> {
+                ConcurrentLinkedDeque<String> toSent = new ConcurrentLinkedDeque<>(List.of("The", " sent value"));
+                subscriber.onSubscribe(new Flow.Subscription() {
+                    @Override
+                    public void request(long n) {
+                        if (!toSent.isEmpty()) {
+                            subscriber.onNext(ByteBuffer.wrap(toSent.poll().getBytes(StandardCharsets.UTF_8)));
+                        } else {
+                            subscriber.onComplete();
+                        }
+                    }
+
+                    @Override
+                    public void cancel() {
+                    }
+                });
+            }))
+            .uri(rp.uri().resolve("/"))
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        MuAssert.assertNotTimedOut("Waiting for completion", latch, 5, TimeUnit.SECONDS);
+        assertThat(received.toString(), is("The sent value"));
+        assertThat(resp.statusCode(), is(200));
+
+        assertThat(chunkBeforeSentToTarget.toString(UTF_8), is("The sent value"));
+        assertThat(chunkAfterSentToTarget.toString(UTF_8), is("The sent value"));
+
+        assertThat(onBeforeRequestBodyChunkSentToTargetCallCount.get(), is(greaterThan(0)));
+        assertThat(onRequestBodyChunkSentToTargetCallCount.get(), is(greaterThan(0)));
+        assertThat(onRequestBodyFullSentToTargetCallCount.get(), is(greaterThan(0)));
+        assertThat(onBeforeRequestBodyChunkSentToTargetBufferLengthCount.get(), equalTo(14));
+        assertThat(onBeforeRequestBodyChunkSentToTargetBufferLengthCount.get(), equalTo(14));
+        assertThat(totalRequestBodyBytes.get(), equalTo(14L));
     }
 
 
