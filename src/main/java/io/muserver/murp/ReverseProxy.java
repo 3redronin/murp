@@ -119,24 +119,6 @@ public class ReverseProxy implements MuHandler {
         AtomicReference<HttpRequest> targetRequestRef = new AtomicReference<>();
         AtomicInteger responseBodyTotalByteCount = new AtomicInteger(0);
 
-        Consumer<Throwable> closeClientRequest = (error) -> {
-
-            if (clientResponse.responseState().endState()) {
-                return;
-            }
-
-            if (error != null && !clientResponse.hasStartedSendingData()) {
-                final int status = (error instanceof TimeoutException) ? 504 : 500;
-                final String body = (error instanceof TimeoutException) ? "504 Gateway Timeout" : "500 Internal Server Error";
-                clientResponse.status(status);
-                asyncHandle.write(Mutils.toByteBuffer(body));
-            }
-
-            if (!clientResponse.responseState().endState()) {
-                asyncHandle.complete();
-            }
-        };
-
 
         asyncHandle.addResponseCompleteHandler((info) -> {
 
@@ -257,9 +239,7 @@ public class ReverseProxy implements MuHandler {
 
                                         @Override
                                         public void onError(Throwable throwable) {
-                                            // cancel the target request
-                                            subscriber.onError(throwable);
-                                            closeClientRequest.accept(new RuntimeException("request body read error"));
+                                            // do nothing as asyncHandle response complete listener will trigger cancellation
                                         }
                                     });
                                 }
@@ -267,7 +247,7 @@ public class ReverseProxy implements MuHandler {
 
                             @Override
                             public void cancel() {
-                                closeClientRequest.accept(new RuntimeException("request body send cancel"));
+                                log.info("cancel request body pumping");
                             }
                         });
 
@@ -432,11 +412,30 @@ public class ReverseProxy implements MuHandler {
 
         HttpRequest targetRequest = targetReq.build();
         targetRequestRef.set(targetRequest);
+
         targetResponseFutureRef.set(httpClient.sendAsync(targetRequest, bh));
 
         targetResponseFutureRef.get()
             .orTimeout(totalTimeoutInMillis, TimeUnit.MILLISECONDS)
-            .whenComplete((voidHttpResponse, throwable) -> closeClientRequest.accept(throwable));
+            .whenComplete((httpResponse, throwable) -> {
+
+                if (clientResponse.responseState().endState()) {
+                    return;
+                }
+
+                if (throwable != null) {
+                    log.info("Closing client request for " + clientRequest, throwable);
+                }
+
+                if (throwable != null && !clientResponse.hasStartedSendingData()) {
+                    final int status = (throwable instanceof TimeoutException) ? 504 : 500;
+                    final String body = (throwable instanceof TimeoutException) ? "504 Gateway Timeout" : "500 Internal Server Error";
+                    clientResponse.status(status);
+                    asyncHandle.write(Mutils.toByteBuffer(body));
+                }
+
+                asyncHandle.complete();
+            });
 
         return true;
     }
