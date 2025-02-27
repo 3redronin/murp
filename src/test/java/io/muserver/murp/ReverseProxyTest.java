@@ -52,6 +52,8 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 import static scaffolding.ClientUtils.call;
 import static scaffolding.ClientUtils.request;
 import static scaffolding.MuAssert.assertEventually;
@@ -216,7 +218,7 @@ public class ReverseProxyTest {
                         "md5: " + rawCheckSum));
             }
 
-            System.out.println("success " + i);
+            log.info("success {}", i);
 
         }
 
@@ -332,12 +334,14 @@ public class ReverseProxyTest {
             .addHandler(reverseProxy().withUriMapper(UriMapper.toDomain(targetServer.uri())))
             .start();
 
+        for (int i = 0; i < 100; i++) {
+            log.info("testing proxying piece by piece {}", i);
+            HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
+                .uri(reverseProxyServer.uri().resolve("/"))
+                .build(), HttpResponse.BodyHandlers.ofString());
 
-        HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
-            .uri(reverseProxyServer.uri().resolve("/"))
-            .build(), HttpResponse.BodyHandlers.ofString());
-
-        assertThat(resp.body(), equalTo(m1 + m2 + m3));
+            assertThat(resp.body(), equalTo(m1 + m2 + m3));
+        }
     }
 
     private ByteBuffer cloneByteBuffer(ByteBuffer byteBuffer) {
@@ -364,6 +368,227 @@ public class ReverseProxyTest {
     }
 
     @Test
+    public void completeCallbackInvokedInRightSequence() throws IOException, InterruptedException {
+
+        CountDownLatch latch = new CountDownLatch(2);
+        AtomicInteger callSequence = new AtomicInteger(0);
+
+        AtomicInteger targetServerNotifiedSequence = new AtomicInteger(0);
+
+        MuServer targetServer = httpServer()
+            .addHandler((muRequest, muResponse) -> {
+                log.info("received request {}", muRequest);
+                AsyncHandle asyncHandle = muRequest.handleAsync();
+                asyncHandle.addResponseCompleteHandler(responseInfo -> {
+                    targetServerNotifiedSequence.set(callSequence.incrementAndGet());
+                    latch.countDown();
+                });
+                // do nothing and wait for client to drop
+                asyncHandle.write(Mutils.toByteBuffer("hello"));
+                asyncHandle.complete();
+                return true;
+            })
+            .start();
+
+        AtomicInteger murpNotifiedSequence = new AtomicInteger(0);
+        MuServer reverseProxyServer = httpServer()
+            .addHandler(reverseProxy()
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                .addProxyCompleteListener((clientRequest, clientResponse, target, durationMillis) -> {
+                    murpNotifiedSequence.set(callSequence.incrementAndGet());
+                    latch.countDown();
+                })
+            )
+            .start();
+
+        CompletableFuture<HttpResponse<String>> responseFuture = client.sendAsync(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/hello"))
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertTrue(latch.await(3, TimeUnit.SECONDS));
+        assertThat(targetServerNotifiedSequence.get(), equalTo(1));
+        assertThat(murpNotifiedSequence.get(), equalTo(2));
+    }
+
+    @Test
+    public void completeCallbackInvokedInRightSequence_responseBodyEmptyCase() throws IOException, InterruptedException, ExecutionException {
+
+        CountDownLatch latch = new CountDownLatch(2);
+        AtomicInteger callSequence = new AtomicInteger(0);
+
+        AtomicInteger targetServerNotifiedSequence = new AtomicInteger(0);
+
+        MuServer targetServer = httpServer()
+            .addHandler((muRequest, muResponse) -> {
+                log.info("received request {}", muRequest);
+                AsyncHandle asyncHandle = muRequest.handleAsync();
+                asyncHandle.addResponseCompleteHandler(responseInfo -> {
+                    targetServerNotifiedSequence.set(callSequence.incrementAndGet());
+                    latch.countDown();
+                });
+                asyncHandle.complete();
+                return true;
+            })
+            .start();
+
+        AtomicInteger murpNotifiedSequence = new AtomicInteger(0);
+        MuServer reverseProxyServer = httpServer()
+            .addHandler(reverseProxy()
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                .addProxyCompleteListener((clientRequest, clientResponse, target, durationMillis) -> {
+                    murpNotifiedSequence.set(callSequence.incrementAndGet());
+                    latch.countDown();
+                })
+            )
+            .start();
+
+        CompletableFuture<HttpResponse<String>> responseFuture = client.sendAsync(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/hello"))
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(responseFuture.get().body(), equalTo(""));
+
+        assertTrue(latch.await(3, TimeUnit.SECONDS));
+        assertThat(targetServerNotifiedSequence.get(), equalTo(1));
+        assertThat(murpNotifiedSequence.get(), equalTo(2));
+    }
+
+    @Test
+    public void clientEarlyDropOnReceivingResponseBodyWillNotifyTargetServer() throws IOException, InterruptedException {
+
+        CountDownLatch latch = new CountDownLatch(2);
+        AtomicInteger callSequence = new AtomicInteger(0);
+
+        AtomicInteger targetServerNotifiedSequence = new AtomicInteger(0);
+
+        MuServer targetServer = httpServer()
+            .addHandler((muRequest, muResponse) -> {
+                log.info("received request {}", muRequest);
+                AsyncHandle asyncHandle = muRequest.handleAsync();
+                asyncHandle.addResponseCompleteHandler(responseInfo -> {
+                    targetServerNotifiedSequence.set(callSequence.incrementAndGet());
+                    latch.countDown();
+                });
+                // do nothing and wait for client to drop
+                return true;
+            })
+            .start();
+
+        AtomicInteger murpNotifiedSequence = new AtomicInteger(0);
+        MuServer reverseProxyServer = httpServer()
+            .addHandler(reverseProxy()
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                .addProxyCompleteListener((clientRequest, clientResponse, target, durationMillis) -> {
+                    murpNotifiedSequence.set(callSequence.incrementAndGet());
+                    latch.countDown();
+                })
+            )
+            .start();
+
+        CompletableFuture<HttpResponse<String>> responseFuture = client.sendAsync(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/hello"))
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+
+        // wait for the request to be sent
+        Thread.sleep(500);
+
+        assertTrue(responseFuture.cancel(true));
+        assertThrows(Exception.class, responseFuture::get);
+
+        assertTrue(latch.await(3, TimeUnit.SECONDS));
+
+        // for error case, murp aware of it first
+        assertThat(murpNotifiedSequence.get(), equalTo(1));
+        assertThat(targetServerNotifiedSequence.get(), equalTo(2));
+
+    }
+
+
+    @Test
+    public void clientEarlyDropOnSendingRequestBodyWillNotifyTargetServer() throws IOException, InterruptedException, ExecutionException {
+
+        CountDownLatch latch = new CountDownLatch(2);
+        AtomicInteger callSequence = new AtomicInteger(0);
+
+        AtomicInteger targetServerNotifiedSequence = new AtomicInteger(0);
+
+        MuServer targetServer = httpServer()
+            .addHandler((muRequest, muResponse) -> {
+                log.info("received request {}", muRequest);
+                AsyncHandle asyncHandle = muRequest.handleAsync();
+                asyncHandle.addResponseCompleteHandler(responseInfo -> {
+                    targetServerNotifiedSequence.set(callSequence.incrementAndGet());
+                    latch.countDown();
+                });
+
+                // keep reading request body
+                String requestBody = muRequest.readBodyAsString();
+
+                log.warn("broken temp requestBody: [{}]", requestBody);
+                return true;
+            })
+            .start();
+
+        AtomicInteger murpNotifiedSequence = new AtomicInteger(0);
+        MuServer reverseProxyServer = httpServer()
+            .addHandler(reverseProxy()
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                .addProxyCompleteListener((clientRequest, clientResponse, target, durationMillis) -> {
+                    murpNotifiedSequence.set(callSequence.incrementAndGet());
+                    latch.countDown();
+                })
+            )
+            .start();
+
+        CountDownLatch sendingLatch = new CountDownLatch(1);
+        CompletableFuture<HttpResponse<String>> responseFuture = client.sendAsync(HttpRequest.newBuilder()
+            .method("POST", HttpRequest.BodyPublishers.fromPublisher(subscriber -> {
+                ConcurrentLinkedDeque<String> toSent = new ConcurrentLinkedDeque<>(List.of("The", " sent value"));
+                subscriber.onSubscribe(new Flow.Subscription() {
+                    @Override
+                    public void request(long n) {
+                        if (!toSent.isEmpty()) {
+                            subscriber.onNext(ByteBuffer.wrap(toSent.poll().getBytes(UTF_8)));
+                        } else {
+                            sleep(500); // without the sleep, the client will drop the connection before the server can read the request body
+                            subscriber.onError(new RuntimeException("pretending to be early drop"));
+                            sendingLatch.countDown();
+                        }
+                    }
+
+                    @Override
+                    public void cancel() {
+                    }
+                });
+            }))
+            .uri(reverseProxyServer.uri().resolve("/"))
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+
+        // wait for the request to be sent
+        Thread.sleep(500);
+
+        assertThrows("pretending to be early drop", Exception.class, responseFuture::get);
+
+        assertTrue(sendingLatch.await(3, TimeUnit.SECONDS));
+        assertTrue(latch.await(3, TimeUnit.SECONDS));
+
+        // for error case, murp aware of it first
+        assertThat(murpNotifiedSequence.get(), equalTo(1));
+        assertThat(targetServerNotifiedSequence.get(), equalTo(2));
+
+    }
+
+    private static void sleep(int millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Test
     public void itCanProxyPieceByPieceWithProxyListener() throws InterruptedException, IOException {
         String m1 = StringUtils.randomAsciiStringOfLength(20000);
         String m2 = StringUtils.randomAsciiStringOfLength(120000);
@@ -385,6 +610,11 @@ public class ReverseProxyTest {
 
         ByteArrayOutputStream chunkReceivedFromTarget = new ByteArrayOutputStream();
         ByteArrayOutputStream chunkSentToClient = new ByteArrayOutputStream();
+
+
+        AtomicInteger callSequence = new AtomicInteger(0);
+        AtomicInteger onResponseBodyChunkFullSentToClientCallSequence = new AtomicInteger(0);
+        AtomicInteger proxyCompleteListenerCallSequence = new AtomicInteger(0);
 
         MuServer reverseProxyServer = httpServer()
             .addHandler(reverseProxy()
@@ -412,7 +642,13 @@ public class ReverseProxyTest {
                     public void onResponseBodyChunkFullSentToClient(MuRequest clientRequest, MuResponse clientResponse, long totalBodyBytes) {
                         onResponseBodyChunkFullSentToClientCallCount.incrementAndGet();
                         onResponseBodyChunkFullSentToClientBytes.set(totalBodyBytes);
+                        onResponseBodyChunkFullSentToClientCallSequence.set(callSequence.incrementAndGet());
+                        log.info("onResponseBodyChunkFullSentToClient");
                     }
+                })
+                .addProxyCompleteListener((clientRequest, clientResponse, target, durationMillis) -> {
+                    proxyCompleteListenerCallSequence.set(callSequence.incrementAndGet());
+                    log.info("proxyCompleteListenerCallSequence");
                 })
             )
             .start();
@@ -433,6 +669,9 @@ public class ReverseProxyTest {
         assertThat(onResponseBodyChunkReceivedFromTargetBytes.get(), equalTo(fullBody.length()));
         assertThat(onResponseBodyChunkSentToClientBytes.get(), equalTo(fullBody.length()));
         assertThat(onResponseBodyChunkFullSentToClientBytes.get(), equalTo((long) fullBody.length()));
+
+        assertThat(onResponseBodyChunkFullSentToClientCallSequence.get(), is(1));
+        assertThat(proxyCompleteListenerCallSequence.get(), is(2));
     }
 
     @Test
@@ -785,7 +1024,7 @@ public class ReverseProxyTest {
 
             @Override
             public void onFailure(EventSource eventSource, Throwable t, okhttp3.Response response) {
-                System.out.println("Error from sse = " + t);
+                log.info("Error from sse = {}", String.valueOf(t));
             }
         });
         assertThat(messageReceivedLatch.await(20, TimeUnit.SECONDS), is(true));

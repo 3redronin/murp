@@ -13,6 +13,7 @@ import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -105,7 +106,6 @@ public class ReverseProxy implements MuHandler {
 
         final long start = System.currentTimeMillis();
         final AsyncHandle asyncHandle = clientRequest.handleAsync();
-
         final String clientRequestProtocol = clientRequest.protocol();
 
         clientResponse.headers().remove(HeaderNames.DATE); // so that the target's date can be used
@@ -117,10 +117,12 @@ public class ReverseProxy implements MuHandler {
 
         AtomicReference<CompletableFuture<HttpResponse<Void>>> targetResponseFutureRef = new AtomicReference<>();
         AtomicReference<HttpRequest> targetRequestRef = new AtomicReference<>();
+        AtomicInteger responseBodyTotalByteCount = new AtomicInteger(0);
 
         Consumer<Throwable> closeClientRequest = (error) -> {
-            if (error != null) {
-                log.warn("error detected for {}", clientRequest, error);
+
+            if (clientResponse.responseState().endState()) {
+                return;
             }
 
             if (error != null && !clientResponse.hasStartedSendingData()) {
@@ -133,13 +135,41 @@ public class ReverseProxy implements MuHandler {
             if (!clientResponse.responseState().endState()) {
                 asyncHandle.complete();
             }
+        };
+
+
+        asyncHandle.addResponseCompleteHandler((info) -> {
+
+            long duration = System.currentTimeMillis() - start;
+
+            if (proxyListener != null) {
+                if (info.completedSuccessfully()) {
+                    try {
+                        proxyListener.onResponseBodyChunkFullSentToClient(clientRequest, clientResponse, responseBodyTotalByteCount.get());
+                    } catch (Exception e) {
+                        log.warn("proxyListener.onResponseBodyChunkFullSentToClient failed", e);
+                    }
+                }
+            }
+
+            for (ProxyCompleteListener proxyCompleteListener : proxyCompleteListeners) {
+                try {
+                    proxyCompleteListener.onComplete(clientRequest, clientResponse, target, duration);
+                } catch (Exception e) {
+                    log.warn("proxyCompleteListener error", e);
+                }
+            }
 
             CompletableFuture<HttpResponse<Void>> targetResponse = targetResponseFutureRef.get();
-            if (error != null && targetResponse != null && !targetResponse.isDone()) {
+            if (targetResponse != null && !targetResponse.isDone()) {
                 log.info("cancelling target request for {}", clientRequest);
                 targetResponse.cancel(true);
             }
-        };
+
+            targetRequestRef.set(null);
+            targetResponseFutureRef.set(null);
+        });
+
 
         HttpRequest.BodyPublisher bodyPublisher;
         boolean hasRequestBody = hasRequestBody(clientRequest);
@@ -304,7 +334,6 @@ public class ReverseProxy implements MuHandler {
                 }
 
                 // response body
-                long[] totalByteCount = new long[]{0L};
                 return HttpResponse.BodySubscribers.fromSubscriber(new Flow.Subscriber<>() {
 
                     private Flow.Subscription subscription;
@@ -353,13 +382,14 @@ public class ReverseProxy implements MuHandler {
                             }
 
                             asyncHandle.write(buffer.position(position), throwable -> {
+
                                 if (throwable != null) {
                                     subscription.cancel();
                                     onError(throwable);
                                     return;
                                 }
 
-                                totalByteCount[0] += remaining;
+                                responseBodyTotalByteCount.addAndGet(remaining);
 
                                 if (proxyListener != null) {
                                     try {
@@ -378,26 +408,12 @@ public class ReverseProxy implements MuHandler {
 
                     @Override
                     public void onError(Throwable throwable) {
-                        closeClientRequest.accept(throwable);
+                        // do nothing, trigger client request close on the httpClient.sendAsync() complete callback.
                     }
 
                     @Override
                     public void onComplete() {
-                        targetResponseFutureRef.set(null);
-
-                        if (proxyListener != null) {
-                            asyncHandle.addResponseCompleteHandler((info) -> {
-                                if (info.completedSuccessfully()) {
-                                    try {
-                                        proxyListener.onResponseBodyChunkFullSentToClient(clientRequest, clientResponse, totalByteCount[0]);
-                                    } catch (Exception e) {
-                                        log.warn("proxyListener.onResponseBodyChunkFullSentToClient failed", e);
-                                    }
-                                }
-                            });
-                        }
-
-                        asyncHandle.complete();
+                        // do nothing, trigger client request close on the httpClient.sendAsync() complete callback.
                     }
                 });
             }
@@ -420,20 +436,7 @@ public class ReverseProxy implements MuHandler {
 
         targetResponseFutureRef.get()
             .orTimeout(totalTimeoutInMillis, TimeUnit.MILLISECONDS)
-            .whenComplete((voidHttpResponse, throwable) -> {
-
-                long duration = System.currentTimeMillis() - start;
-
-                closeClientRequest.accept(throwable);
-
-                for (ProxyCompleteListener proxyCompleteListener : proxyCompleteListeners) {
-                    try {
-                        proxyCompleteListener.onComplete(clientRequest, clientResponse, target, duration);
-                    } catch (Exception e) {
-                        log.warn("proxyCompleteListener error", e);
-                    }
-                }
-            });
+            .whenComplete((voidHttpResponse, throwable) -> closeClientRequest.accept(throwable));
 
         return true;
     }
@@ -553,6 +556,19 @@ public class ReverseProxy implements MuHandler {
             customHopByHop.add(s.toLowerCase());
         }
         return customHopByHop;
+    }
+
+    @FunctionalInterface
+    private interface ThrowableRunnable {
+        void run() throws Throwable;
+    }
+
+    private static void logError(ThrowableRunnable runnable) {
+        try {
+            runnable.run();
+        } catch (Throwable e) {
+            log.error("logError", e);
+        }
     }
 
 }
