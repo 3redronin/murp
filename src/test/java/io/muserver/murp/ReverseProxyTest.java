@@ -619,7 +619,6 @@ public class ReverseProxyTest {
         ByteArrayOutputStream chunkReceivedFromTarget = new ByteArrayOutputStream();
         ByteArrayOutputStream chunkSentToClient = new ByteArrayOutputStream();
 
-
         AtomicInteger callSequence = new AtomicInteger(0);
         AtomicInteger onResponseBodyChunkFullSentToClientCallSequence = new AtomicInteger(0);
         AtomicInteger proxyCompleteListenerCallSequence = new AtomicInteger(0);
@@ -666,6 +665,7 @@ public class ReverseProxyTest {
             .uri(reverseProxyServer.uri().resolve("/"))
             .build(), HttpResponse.BodyHandlers.ofString());
 
+        assertEventually(callSequence::get, is(2));
 
         String fullBody = m1 + m2 + m3;
         assertThat(resp.body(), equalTo(fullBody));
