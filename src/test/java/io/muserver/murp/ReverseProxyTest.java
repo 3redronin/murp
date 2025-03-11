@@ -464,6 +464,7 @@ public class ReverseProxyTest {
         AtomicInteger callSequence = new AtomicInteger(0);
 
         AtomicInteger targetServerNotifiedSequence = new AtomicInteger(0);
+        AtomicReference<Throwable> clientError = new AtomicReference<>();
 
         MuServer targetServer = httpServer()
             .addHandler((muRequest, muResponse) -> {
@@ -482,6 +483,12 @@ public class ReverseProxyTest {
         MuServer reverseProxyServer = httpServer()
             .addHandler(reverseProxy()
                 .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                .withProxyListener(new ProxyListener() {
+                    @Override
+                    public void onErrorDetectedFromClient(MuRequest clientRequest, MuResponse clientResponse, HttpRequest targetRequest, Throwable cause) {
+                        clientError.set(cause);
+                    }
+                })
                 .addProxyCompleteListener((clientRequest, clientResponse, target, durationMillis) -> {
                     murpNotifiedSequence.set(callSequence.incrementAndGet());
                     latch.countDown();
@@ -505,6 +512,8 @@ public class ReverseProxyTest {
         // for error case, murp aware of it first
         assertThat(murpNotifiedSequence.get(), equalTo(1));
         assertThat(targetServerNotifiedSequence.get(), equalTo(2));
+        assertThat(clientError.get(), instanceOf(RuntimeException.class));
+        assertThat(clientError.get().getMessage(), containsString("client not completed successfully."));
 
     }
 
@@ -520,6 +529,7 @@ public class ReverseProxyTest {
         AtomicInteger callSequence = new AtomicInteger(0);
 
         AtomicInteger targetServerNotifiedSequence = new AtomicInteger(0);
+        AtomicReference<Throwable> clientError = new AtomicReference<>();
 
         MuServer targetServer = httpServer()
             .addHandler((muRequest, muResponse) -> {
@@ -545,6 +555,12 @@ public class ReverseProxyTest {
                 .addProxyCompleteListener((clientRequest, clientResponse, target, durationMillis) -> {
                     murpNotifiedSequence.set(callSequence.incrementAndGet());
                     latch.countDown();
+                })
+                .withProxyListener(new ProxyListener() {
+                    @Override
+                    public void onErrorDetectedFromClient(MuRequest clientRequest, MuResponse clientResponse, HttpRequest targetRequest, Throwable cause) {
+                        clientError.set(cause);
+                    }
                 })
             )
             .start();
@@ -585,6 +601,8 @@ public class ReverseProxyTest {
         // for error case, murp aware of it first
         assertThat(murpNotifiedSequence.get(), equalTo(1));
         assertThat(targetServerNotifiedSequence.get(), equalTo(2));
+        assertThat(clientError.get(), instanceOf(RuntimeException.class));
+        assertThat(clientError.get().getMessage(), containsString("client not completed successfully."));
 
     }
 
@@ -599,7 +617,8 @@ public class ReverseProxyTest {
     @Test
     public void targetServerEarlyDropWillNotifyClient()  {
 
-        CountDownLatch latch = new CountDownLatch(2);
+        AtomicBoolean completeCalled = new AtomicBoolean(false);
+        AtomicReference<Throwable> targetError = new AtomicReference<>();
 
         MuServer targetServer = httpServer()
             .addHandler((request, response) -> {
@@ -618,7 +637,13 @@ public class ReverseProxyTest {
             .addHandler(reverseProxy()
                 .withUriMapper(UriMapper.toDomain(targetServer.uri()))
                 .addProxyCompleteListener((clientRequest, clientResponse, target, durationMillis) -> {
-                    latch.countDown();
+                    completeCalled.set(true);
+                })
+                .withProxyListener(new ProxyListener() {
+                    @Override
+                    public void onErrorDetectedFromTarget(MuRequest clientRequest, MuResponse clientResponse, HttpRequest targetRequest, Throwable cause) {
+                        targetError.set(cause);
+                    }
                 })
             )
             .start();
@@ -631,7 +656,10 @@ public class ReverseProxyTest {
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
         });
 
+        assertThat(completeCalled.get(), is(true));
         assertThat(ioException.getMessage(), is("chunked transfer encoding, state: READING_LENGTH"));
+        assertThat(targetError.get(), instanceOf(RuntimeException.class));
+        assertThat(targetError.get().getMessage(), containsString("chunked transfer encoding, state: READING_LENGTH"));
 
     }
 

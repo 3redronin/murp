@@ -131,6 +131,12 @@ public class ReverseProxy implements MuHandler {
                     } catch (Exception e) {
                         log.warn("proxyListener.onResponseBodyChunkFullSentToClient failed", e);
                     }
+                } else {
+                    try {
+                        proxyListener.onErrorDetectedFromClient(clientRequest, clientResponse, targetRequestRef.get(), new RuntimeException("client not completed successfully."));
+                    } catch (Exception e) {
+                        log.warn("proxyListener.onErrorDetectedFromClient failed", e);
+                    }
                 }
             }
 
@@ -429,8 +435,15 @@ public class ReverseProxy implements MuHandler {
                 }
 
                 log.info("closing client request as target server error detected. " +
-                        "client_request=[" + clientRequest + "], target_request=[" + targetRequestRef.get() + "]",
-                    throwable);
+                    "client_request=[{}], target_request=[{}], error={}", clientRequest, targetRequestRef.get(), throwable.getMessage());
+
+                if (proxyListener != null) {
+                    try {
+                        proxyListener.onErrorDetectedFromTarget(clientRequest, clientResponse, targetRequestRef.get(), throwable);
+                    } catch (Exception error) {
+                        log.warn("proxyListener.onErrorDetectedFromTarget failed", error);
+                    }
+                }
 
                 if (clientResponse.hasStartedSendingData()) {
                     asyncHandle.complete(throwable);

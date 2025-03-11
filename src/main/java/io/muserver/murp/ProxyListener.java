@@ -83,15 +83,20 @@ public interface ProxyListener {
 
     /**
      * Called when error detected from client side
+     * This API is experimental and might be changed in the future
+     *
      * @param clientRequest Client Request
      * @param clientResponse Client Response
+     * @param targetRequest target request
      * @param cause the error cause
      */
-    default void onErrorDetectedFromClient(MuRequest clientRequest, MuResponse clientResponse, Throwable cause) {
+    default void onErrorDetectedFromClient(MuRequest clientRequest, MuResponse clientResponse, HttpRequest targetRequest, Throwable cause) {
     }
 
     /**
      * Called when error detected from target side
+     * This API is experimental and might be changed in the future
+     *
      * @param clientRequest Client Request
      * @param clientResponse Client Response
      * @param targetRequest target request
