@@ -5,6 +5,7 @@ import io.muserver.MuServer;
 import org.junit.After;
 import org.junit.Test;
 
+import java.io.IOException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 
@@ -14,6 +15,7 @@ import static io.muserver.murp.ReverseProxyBuilder.createHttpClientBuilder;
 import static io.muserver.murp.ReverseProxyBuilder.reverseProxy;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
+import static org.junit.Assert.assertThrows;
 
 public class TimeoutsTest {
 
@@ -68,13 +70,12 @@ public class TimeoutsTest {
                 )
                 .start();
 
-        HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
+        IOException ioException = assertThrows("", IOException.class, () -> {
+            client.send(HttpRequest.newBuilder()
                 .uri(reverseProxyServer.uri())
                 .build(), HttpResponse.BodyHandlers.ofString());
-
-
-        assertThat(resp.statusCode(), isOneOf(504, 200));
-        assertThat(resp.body(), not(containsString("Goodbye")));
+        });
+        assertThat(ioException.getMessage(), is("chunked transfer encoding, state: READING_LENGTH"));
     }
 
     @After

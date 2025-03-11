@@ -3,6 +3,7 @@ package io.muserver.murp;
 import io.muserver.MuRequest;
 import io.muserver.MuResponse;
 
+import java.net.http.HttpRequest;
 import java.nio.ByteBuffer;
 
 /**
@@ -78,6 +79,25 @@ public interface ProxyListener {
      * @param totalBodyBytes the total sent bytes count
      */
     default void onResponseBodyChunkFullSentToClient(MuRequest clientRequest, MuResponse clientResponse, long totalBodyBytes) {
+    }
+
+    /**
+     * Called when error detected from client side
+     * @param clientRequest Client Request
+     * @param clientResponse Client Response
+     * @param cause the error cause
+     */
+    default void onErrorDetectedFromClient(MuRequest clientRequest, MuResponse clientResponse, Throwable cause) {
+    }
+
+    /**
+     * Called when error detected from target side
+     * @param clientRequest Client Request
+     * @param clientResponse Client Response
+     * @param targetRequest target request
+     * @param cause the error cause
+     */
+    default void onErrorDetectedFromTarget(MuRequest clientRequest, MuResponse clientResponse, HttpRequest targetRequest, Throwable cause) {
     }
 
 }

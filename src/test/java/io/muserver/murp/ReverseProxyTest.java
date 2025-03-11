@@ -510,7 +510,7 @@ public class ReverseProxyTest {
 
 
     @Test
-    public void clientEarlyDropOnSendingRequestBodyWillNotifyTargetServer() throws IOException, InterruptedException, ExecutionException {
+    public void clientEarlyDropOnSendingRequestBodyWillNotifyTargetServer() throws InterruptedException {
 
         // skip running this below JDK 17, as the cancellation doesn't seem to be working properly
         // also try with RawClient, the socket close didn't trigger the complete callback in the ReverseProxy.java
@@ -594,6 +594,45 @@ public class ReverseProxyTest {
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    @Test
+    public void targetServerEarlyDropWillNotifyClient()  {
+
+        CountDownLatch latch = new CountDownLatch(2);
+
+        MuServer targetServer = httpServer()
+            .addHandler((request, response) -> {
+                response.status(200);
+                AsyncHandle asyncHandle = request.handleAsync();
+                new Thread(() -> {
+                    asyncHandle.write(Mutils.toByteBuffer("Hello World"));
+                    sleep(1000);
+                    asyncHandle.complete(new RuntimeException("drop in the middle"));
+                }).start();
+                return true;
+            })
+            .start();
+
+        MuServer reverseProxyServer = httpServer()
+            .addHandler(reverseProxy()
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                .addProxyCompleteListener((clientRequest, clientResponse, target, durationMillis) -> {
+                    latch.countDown();
+                })
+            )
+            .start();
+
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/"))
+            .build();
+
+        IOException ioException = assertThrows("", IOException.class, () -> {
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        });
+
+        assertThat(ioException.getMessage(), is("chunked transfer encoding, state: READING_LENGTH"));
+
     }
 
     @Test

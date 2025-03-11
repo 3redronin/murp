@@ -144,7 +144,7 @@ public class ReverseProxy implements MuHandler {
 
             CompletableFuture<HttpResponse<Void>> targetResponse = targetResponseFutureRef.get();
             if (targetResponse != null && !targetResponse.isDone()) {
-                log.info("cancelling target request for {}", clientRequest);
+                log.info("cancelling target request as client close detected. target_request={}, client_request={}", targetRequestRef.get(), clientRequest);
                 targetResponse.cancel(true);
             }
 
@@ -423,18 +423,26 @@ public class ReverseProxy implements MuHandler {
                     return;
                 }
 
-                if (throwable != null) {
-                    log.info("Closing client request for " + clientRequest, throwable);
+                if (throwable == null) {
+                    asyncHandle.complete();
+                    return;
                 }
 
-                if (throwable != null && !clientResponse.hasStartedSendingData()) {
-                    final int status = (throwable instanceof TimeoutException) ? 504 : 500;
-                    final String body = (throwable instanceof TimeoutException) ? "504 Gateway Timeout" : "500 Internal Server Error";
-                    clientResponse.status(status);
-                    asyncHandle.write(Mutils.toByteBuffer(body));
+                log.info("closing client request as target server error detected. " +
+                        "client_request=[" + clientRequest + "], target_request=[" + targetRequestRef.get() + "]",
+                    throwable);
+
+                if (clientResponse.hasStartedSendingData()) {
+                    asyncHandle.complete(throwable);
+                    return;
                 }
 
+                final int status = (throwable instanceof TimeoutException) ? 504 : 500;
+                final String body = (throwable instanceof TimeoutException) ? "504 Gateway Timeout" : "500 Internal Server Error";
+                clientResponse.status(status);
+                asyncHandle.write(Mutils.toByteBuffer(body));
                 asyncHandle.complete();
+
             });
 
         return true;
