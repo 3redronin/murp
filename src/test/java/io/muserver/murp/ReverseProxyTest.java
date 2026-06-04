@@ -663,6 +663,58 @@ public class ReverseProxyTest {
 
     }
 
+    /**
+     * Reproduces the leaked-exchange bug: when the target never responds (or dies) while the client is still
+     * uploading a request body, murp sends an error response (504/500) but the client-&gt;murp request is still
+     * in RECEIVING_BODY. Because muserver only ends an exchange once BOTH the request and response reach an end
+     * state, the exchange stays IN_PROGRESS and the request lingers forever in {@code stats().activeRequests()}.
+     *
+     * <p>The fix is for murp to set {@code Connection: close} on the error response so that muserver's
+     * HttpServerKeepAliveHandler closes the channel once the response is sent. That close triggers
+     * {@code onConnectionEnded} -&gt; {@code request.onCancelled(CLIENT_DISCONNECTED)}, moving the request to
+     * ERRORED so the exchange ends and is removed from activeRequests.</p>
+     */
+    @Test
+    public void errorResponseWhileClientStillUploadingDoesNotLeakTheExchange() throws Exception {
+
+        // target that accepts the connection but never produces a response, so murp's total timeout fires
+        // while the client is still uploading its (deliberately incomplete) request body.
+        MuServer targetServer = httpServer()
+            .addHandler((request, response) -> {
+                request.handleAsync(); // take over but never complete - the target "hangs" / never replies
+                return true;
+            })
+            .start();
+
+        MuServer reverseProxyServer = httpServer()
+            .addHandler(reverseProxy()
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+                .withTotalTimeout(500, TimeUnit.MILLISECONDS)
+            )
+            .start();
+
+        // raw client so we fully control the upload: send headers + part of the body, then keep the socket
+        // open without ever sending the rest (simulating a slow / never-finishing PUT upload).
+        try (RawClient rawClient = RawClient.create(reverseProxyServer.uri())) {
+            rawClient.sendStartLine("PUT", "/upload")
+                .sendHeader("host", reverseProxyServer.uri().getAuthority())
+                .sendHeader("content-length", "1000000") // promise a big body...
+                .endHeaders()
+                .sendUTF8("only-a-little-bit-of-the-body") // ...but only ever send a fraction of it
+                .flushRequest();
+
+            // murp's total timeout fires and an error status is returned to the client
+            assertEventually(rawClient::responseString, containsString(" 504"));
+
+            // the request must not be left hanging around in the reverse proxy's active requests once the
+            // error response has been sent - otherwise long-running uploads leak exchanges indefinitely.
+            assertEventually(() -> reverseProxyServer.stats().activeRequests(), is(empty()));
+        } finally {
+            targetServer.stop();
+            reverseProxyServer.stop();
+        }
+    }
+
     @Test
     public void itCanProxyPieceByPieceWithProxyListener() throws InterruptedException, IOException {
         String m1 = StringUtils.randomAsciiStringOfLength(20000);

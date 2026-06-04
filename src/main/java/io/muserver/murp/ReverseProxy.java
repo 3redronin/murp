@@ -453,6 +453,12 @@ public class ReverseProxy implements MuHandler {
                 final int status = (throwable instanceof TimeoutException) ? 504 : 500;
                 final String body = (throwable instanceof TimeoutException) ? "504 Gateway Timeout" : "500 Internal Server Error";
                 clientResponse.status(status);
+                // The target failed before we finished proxying. If the client is still uploading the request body
+                // (e.g. a slow/large PUT) the request never reaches an end state, so the exchange would stay
+                // IN_PROGRESS and leak in MuServer's activeRequests forever. Sending "Connection: close" makes
+                // MuServer close the connection once this response is sent, which cancels the in-flight request
+                // and lets the exchange complete.
+                clientResponse.headers().set(HeaderNames.CONNECTION, HeaderValues.CLOSE);
                 asyncHandle.write(Mutils.toByteBuffer(body));
                 asyncHandle.complete();
 
