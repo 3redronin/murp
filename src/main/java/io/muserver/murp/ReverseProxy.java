@@ -10,13 +10,12 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
 
 import static java.util.Arrays.asList;
 
@@ -118,6 +117,7 @@ public class ReverseProxy implements MuHandler {
         AtomicReference<CompletableFuture<HttpResponse<Void>>> targetResponseFutureRef = new AtomicReference<>();
         AtomicReference<HttpRequest> targetRequestRef = new AtomicReference<>();
         AtomicInteger responseBodyTotalByteCount = new AtomicInteger(0);
+        RequestBodyHandler requestBodyHandler = new RequestBodyHandler(asyncHandle, clientRequest, clientResponse, proxyListener);
 
 
         asyncHandle.addResponseCompleteHandler((info) -> {
@@ -160,124 +160,8 @@ public class ReverseProxy implements MuHandler {
 
 
         HttpRequest.BodyPublisher bodyPublisher;
-        boolean hasRequestBody = hasRequestBody(clientRequest);
-        if (hasRequestBody) {
-            bodyPublisher = new HttpRequest.BodyPublisher() {
-                @Override
-                public void subscribe(Flow.Subscriber<? super ByteBuffer> subscriber) {
-
-                    try {
-                        ConcurrentLinkedDeque<DoneCallback> doneCallbacks = new ConcurrentLinkedDeque<>();
-                        AtomicBoolean isFirst = new AtomicBoolean(true);
-
-                        subscriber.onSubscribe(new Flow.Subscription() {
-                            @Override
-                            public void request(long n) {
-
-                                long[] totalBytesCount = new long[]{0L};
-                                DoneCallback doneCallback = doneCallbacks.poll();
-                                if (doneCallback != null) {
-                                    try {
-                                        doneCallback.onComplete(null);
-                                    } catch (Exception e) {
-                                        log.warn("onComplete failed", e);
-                                        this.cancel();
-                                    }
-                                }
-
-                                if (isFirst.compareAndSet(true, false)) {
-
-                                    // start reading client body only after target subscription established
-                                    // otherwise calling `subscriber.onNext(byteBuffer)` will sometimes cause JDK http client
-                                    // throw NullPointerException and cancel the subscription
-                                    asyncHandle.setReadListener(new RequestBodyListener() {
-                                        @Override
-                                        public void onDataReceived(ByteBuffer byteBuffer, DoneCallback doneCallback) {
-
-                                            doneCallbacks.add(doneCallback);
-                                            ByteBuffer copy = cloneByteBuffer(byteBuffer);
-
-                                            int position = copy.position();
-                                            int remaining = copy.remaining();
-
-                                            if (proxyListener != null) {
-                                                try {
-                                                    proxyListener.onBeforeRequestBodyChunkSentToTarget(clientRequest, clientResponse, copy.position(position));
-                                                } catch (Exception e) {
-                                                    log.warn("proxyListener.onBeforeRequestBodyChunkSentToTarget failed", e);
-                                                }
-                                            }
-
-                                            subscriber.onNext(copy.position(position));
-                                            totalBytesCount[0] += remaining;
-
-                                            if (proxyListener != null) {
-                                                try {
-                                                    proxyListener.onRequestBodyChunkSentToTarget(clientRequest, clientResponse, copy.position(position));
-                                                } catch (Exception e) {
-                                                    log.warn("proxyListener.onBeforeRequestBodyChunkSentToTarget failed", e);
-                                                }
-                                            }
-                                        }
-
-                                        private ByteBuffer cloneByteBuffer(ByteBuffer byteBuffer) {
-                                            // bug fix : upload file random broken - (some of the bytes disordered)
-                                            // clone the byteBuffer to avoid it's being modified after passing into subscriber.onNext()
-                                            int capacity = byteBuffer.remaining();
-                                            ByteBuffer copy = byteBuffer.isDirect() ? ByteBuffer.allocateDirect(capacity) : ByteBuffer.allocate(capacity);
-                                            copy.put(byteBuffer);
-                                            copy.rewind();
-                                            return copy;
-                                        }
-
-                                        @Override
-                                        public void onComplete() {
-                                            subscriber.onComplete();
-
-                                            if (proxyListener != null) {
-                                                try {
-                                                    proxyListener.onRequestBodyFullSentToTarget(clientRequest, clientResponse, totalBytesCount[0]);
-                                                } catch (Exception e) {
-                                                    log.warn("proxyListener.onRequestBodyFullSentToTarget failed", e);
-                                                }
-                                            }
-                                        }
-
-                                        @Override
-                                        public void onError(Throwable throwable) {
-                                            // do nothing as asyncHandle response complete listener will trigger cancellation
-                                        }
-                                    });
-                                }
-                            }
-
-                            @Override
-                            public void cancel() {
-                                log.info("cancel request body pumping");
-                            }
-                        });
-
-
-                    } catch (Throwable throwable) {
-                        log.info("body subscribe error", throwable);
-                        throw throwable;
-                    }
-
-                }
-
-                @Override
-                public long contentLength() {
-                    String contentLength = clientRequest.headers().get(HeaderNames.CONTENT_LENGTH);
-                    if (contentLength != null) {
-                        return Long.parseLong(contentLength);
-                    } else {
-                        return -1;
-                    }
-                }
-            };
-        } else {
-            bodyPublisher = HttpRequest.BodyPublishers.noBody();
-        }
+        boolean hasRequestBody = requestBodyHandler.hasRequestBody();
+        bodyPublisher = requestBodyHandler.bodyPublisher();
 
         HttpRequest.Builder targetReq = HttpRequest.newBuilder()
             .uri(target)
@@ -450,25 +334,28 @@ public class ReverseProxy implements MuHandler {
                     return;
                 }
 
-                final int status = (throwable instanceof TimeoutException) ? 504 : 500;
-                final String body = (throwable instanceof TimeoutException) ? "504 Gateway Timeout" : "500 Internal Server Error";
+                final int status = (throwable instanceof TimeoutException) ? 504 : 502;
+                final String body = (throwable instanceof TimeoutException) ? "504 Gateway Timeout" : "502 Bad Gateway";
+                final byte[] responseBodyBytes = body.getBytes(StandardCharsets.UTF_8);
                 clientResponse.status(status);
-                asyncHandle.write(Mutils.toByteBuffer(body));
-                asyncHandle.complete();
+                clientResponse.headers().set(HeaderNames.CONTENT_LENGTH, Integer.toString(responseBodyBytes.length));
+                asyncHandle.write(ByteBuffer.wrap(responseBodyBytes), writeError -> {
+                    if (writeError != null) {
+                        asyncHandle.complete(writeError);
+                        return;
+                    }
+
+                    if (!hasRequestBody || requestBodyHandler.isCompleted()) {
+                        asyncHandle.complete();
+                        return;
+                    }
+
+                    requestBodyHandler.drainAndDiscard(asyncHandle::complete, asyncHandle::complete);
+                });
 
             });
 
         return true;
-    }
-
-    private static boolean hasRequestBody(MuRequest request) {
-        for (Map.Entry<String, String> header : request.headers()) {
-            String headerName = header.getKey().toLowerCase();
-            if (headerName.equals("content-length") || headerName.equals("transfer-encoding")) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static boolean setTargetRequestHeaders(MuRequest clientRequest, HttpRequest.Builder targetRequest, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders, String viaValue, Set<String> excludedHeaders) {

@@ -42,6 +42,7 @@ public class RawClient implements Closeable {
                         baos.write(buffer, 0, read);
                     }
                 }
+                isConnected.set(false);
             } catch (IOException e) {
 //                System.out.println("Got exception " + e);
                 exception.set(e);
@@ -113,6 +114,10 @@ public class RawClient implements Closeable {
 
     public byte[] asBytes() {
         return baos.toByteArray();
+    }
+
+    public Exception exception() {
+        return exception.get();
     }
 
     @Override

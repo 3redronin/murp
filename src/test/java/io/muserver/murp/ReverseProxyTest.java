@@ -218,8 +218,6 @@ public class ReverseProxyTest {
                         "md5: " + rawCheckSum));
             }
 
-            log.info("success {}", i);
-
         }
 
 
@@ -335,7 +333,6 @@ public class ReverseProxyTest {
             .start();
 
         for (int i = 0; i < 100; i++) {
-            log.info("testing proxying piece by piece {}", i);
             HttpResponse<String> resp = client.send(HttpRequest.newBuilder()
                 .uri(reverseProxyServer.uri().resolve("/"))
                 .build(), HttpResponse.BodyHandlers.ofString());
