@@ -131,6 +131,80 @@ public class ReverseProxyTest {
     }
 
     @Test
+    public void customHopByHopHeadersInRequestAreFilteredFromTarget() throws Exception {
+        MuServer targetServer = httpServer()
+            .addHandler(Method.GET, "/echo-headers",
+                (request, response, pathParams) -> {
+                    response.status(200);
+                    response.headers().set("X-Received-Foo", "Foo: " + request.headers().getAll("Foo"));
+                    response.headers().set("X-Received-Bar", "Bar: " + request.headers().getAll("Bar"));
+                    response.headers().set("X-Received-Custom", "Custom: " + request.headers().getAll("X-Custom"));
+                    response.write("OK");
+                })
+            .start();
+
+        MuServer reverseProxyServer = httpsServer()
+            .addHandler(reverseProxy()
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+            )
+            .start();
+
+        HttpResponse<String> response = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/echo-headers"))
+            .header("Connection", "Foo, Bar")
+            .header("Foo", "should-be-filtered")
+            .header("Bar", "should-also-be-filtered")
+            .header("X-Custom", "should-NOT-be-filtered")
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode(), is(200));
+        HttpHeaders headers = response.headers();
+        assertThat(headers.firstValue("X-Received-Foo").orElse(""), is("Foo: []"));
+        assertThat(headers.firstValue("X-Received-Bar").orElse(""), is("Bar: []"));
+        assertThat(headers.firstValue("X-Received-Custom").orElse(""), is("Custom: [should-NOT-be-filtered]"));
+
+        targetServer.stop();
+        reverseProxyServer.stop();
+    }
+
+    @Test
+    public void customHopByHopHeadersInResponseAreFilteredFromClient() throws Exception {
+        MuServer targetServer = httpServer()
+            .addHandler(Method.GET, "/with-custom-hop",
+                (request, response, pathParams) -> {
+                    response.status(200);
+                    response.headers().set("Connection", "X-Custom-Hop, X-Another-Hop");
+                    response.headers().set("X-Custom-Hop", "should-be-filtered");
+                    response.headers().set("X-Another-Hop", "also-should-be-filtered");
+                    response.headers().set("X-Regular-Header", "should-NOT-be-filtered");
+                    response.write("OK");
+                })
+            .start();
+
+        MuServer reverseProxyServer = httpsServer()
+            .addHandler(reverseProxy()
+                .withUriMapper(UriMapper.toDomain(targetServer.uri()))
+            )
+            .start();
+
+        HttpResponse<String> response = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/with-custom-hop"))
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode(), is(200));
+        HttpHeaders headers = response.headers();
+        assertThat("X-Custom-Hop should be filtered from response", 
+            headers.firstValue("X-Custom-Hop").isEmpty(), is(true));
+        assertThat("X-Another-Hop should be filtered from response", 
+            headers.firstValue("X-Another-Hop").isEmpty(), is(true));
+        assertThat("X-Regular-Header should NOT be filtered", 
+            headers.firstValue("X-Regular-Header").orElse(""), is("should-NOT-be-filtered"));
+
+        targetServer.stop();
+        reverseProxyServer.stop();
+    }
+
+    @Test
     public void gzipGetsProxiedAsGzip() throws Exception {
         MuServer targetServer = httpServer()
             .withHttp2Config(http2Config().enabled(true))

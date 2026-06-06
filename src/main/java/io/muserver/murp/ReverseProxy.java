@@ -180,11 +180,12 @@ public class ReverseProxy implements MuHandler {
 
                 // set response headers
                 boolean clientIsH2 = "HTTP/2.0".equals(clientRequestProtocol);
+                List<String> customHopByHop = getCustomHopByHopHeaders(responseInfo.headers().firstValue("connection").orElse(null));
                 for (Map.Entry<String, List<String>> headerEntry : responseInfo.headers().map().entrySet()) {
                     for (String value : headerEntry.getValue()) {
                         String header = headerEntry.getKey();
                         String lowerName = header.toLowerCase();
-                        if (HOP_BY_HOP_HEADERS.contains(lowerName)) {
+                        if (HOP_BY_HOP_HEADERS.contains(lowerName) || customHopByHop.contains(lowerName)) {
                             continue;
                         }
                         if (!clientIsH2 && HTTP_2_PSEUDO_HEADERS.contains(lowerName)) {
