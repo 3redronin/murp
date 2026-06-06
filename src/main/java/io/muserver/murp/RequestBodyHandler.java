@@ -1,11 +1,6 @@
 package io.muserver.murp;
 
-import io.muserver.AsyncHandle;
-import io.muserver.DoneCallback;
-import io.muserver.HeaderNames;
-import io.muserver.MuRequest;
-import io.muserver.MuResponse;
-import io.muserver.RequestBodyListener;
+import io.muserver.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,12 +42,9 @@ final class RequestBodyHandler {
             doneCallbacks.add(doneCallback);
             ByteBuffer copy = cloneByteBuffer(byteBuffer);
 
-            int position = copy.position();
-            int remaining = copy.remaining();
-
             if (proxyListener != null) {
                 try {
-                    proxyListener.onBeforeRequestBodyChunkSentToTarget(clientRequest, clientResponse, copy.position(position));
+                    proxyListener.onBeforeRequestBodyChunkSentToTarget(clientRequest, clientResponse, copy.duplicate());
                 } catch (Exception e) {
                     log.warn("proxyListener.onBeforeRequestBodyChunkSentToTarget failed", e);
                 }
@@ -64,12 +56,13 @@ final class RequestBodyHandler {
                 return;
             }
 
-            subscriber.onNext(copy.position(position));
+            int remaining = copy.remaining();
+            subscriber.onNext(copy.duplicate());
             requestBodyTotalByteCount.addAndGet(remaining);
 
             if (proxyListener != null) {
                 try {
-                    proxyListener.onRequestBodyChunkSentToTarget(clientRequest, clientResponse, copy.position(position));
+                    proxyListener.onRequestBodyChunkSentToTarget(clientRequest, clientResponse, copy.duplicate());
                 } catch (Exception e) {
                     log.warn("proxyListener.onRequestBodyChunkSentToTarget failed", e);
                 }

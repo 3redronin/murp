@@ -1281,7 +1281,7 @@ public class ReverseProxyTest {
         assertThat(onRequestBodyChunkSentToTargetCallCount.get(), is(greaterThan(0)));
         assertThat(onRequestBodyFullSentToTargetCallCount.get(), is(greaterThan(0)));
         assertThat(onBeforeRequestBodyChunkSentToTargetBufferLengthCount.get(), equalTo(14));
-        assertThat(onBeforeRequestBodyChunkSentToTargetBufferLengthCount.get(), equalTo(14));
+        assertThat(onRequestBodyChunkSentToTargetBufferLengthCount.get(), equalTo(14));
         assertThat(totalRequestBodyBytes.get(), equalTo(14L));
     }
 

@@ -1,5 +1,6 @@
 ![GitHub](https://img.shields.io/github/license/3redronin/murp)
 [![Build and test](https://github.com/3redronin/murp/actions/workflows/ci.yaml/badge.svg)](https://github.com/3redronin/murp/actions/workflows/ci.yaml)
+[![Maven Central](https://img.shields.io/maven-central/v/io.muserver/murp)](https://central.sonatype.com/artifact/io.muserver/murp)
 
 murp
 ----
