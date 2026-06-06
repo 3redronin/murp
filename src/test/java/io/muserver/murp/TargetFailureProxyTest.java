@@ -535,17 +535,24 @@ public class TargetFailureProxyTest {
         CountDownLatch targetSawAbort = new CountDownLatch(1);
         CountDownLatch partialReadConsumed = new CountDownLatch(1);
         targetServer = startTarget((socket, input, output) -> {
-            readRequestHead(input);
+            var req = readRequestHead(input);
+            System.out.println("req = " + req);
             try {
                 int c;
                 while ((c = input.read()) != -1) {
+                    System.out.println("c = " + c + " - " + (char)c);
                     // consume until the proxy closes/cancels the upstream request body
                     if (c == '*') {
                         partialReadConsumed.countDown();
                     }
                 }
+                System.out.println("Finished reading");
             } catch (IOException ignored) {
                 // reset/closed sockets are both acceptable abort signals here
+                System.out.println("IOException got");
+            } catch (Exception e) {
+                System.out.println("Exception!");
+                e.printStackTrace();
             } finally {
                 targetSawAbort.countDown();
             }
@@ -918,6 +925,15 @@ public class TargetFailureProxyTest {
             this.method = method;
             this.contentLength = contentLength;
             this.transferEncoding = transferEncoding;
+        }
+
+        @Override
+        public String toString() {
+            return "RequestHead{" +
+                "method='" + method + '\'' +
+                ", contentLength=" + contentLength +
+                ", transferEncoding='" + transferEncoding + '\'' +
+                '}';
         }
     }
 
