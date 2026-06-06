@@ -13,7 +13,6 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scaffolding.ClientUtils;
-import scaffolding.MuAssert;
 import scaffolding.RawClient;
 import scaffolding.StringUtils;
 
@@ -1204,12 +1203,9 @@ public class ReverseProxyTest {
 
     @Test
     public void streamedRequestBodiesWorkWithRequestProxyListener() throws Exception {
-        CountDownLatch latch = new CountDownLatch(1);
-        StringBuilder received = new StringBuilder();
         MuServer targetServer = httpServer()
             .addHandler(Method.POST, "/", (req, resp, pp) -> {
-                received.append(req.readBodyAsString());
-                latch.countDown();
+                resp.write(req.readBodyAsString());
             })
             .start();
 
@@ -1275,8 +1271,7 @@ public class ReverseProxyTest {
             .uri(rp.uri().resolve("/"))
             .build(), HttpResponse.BodyHandlers.ofString());
 
-        MuAssert.assertNotTimedOut("Waiting for completion", latch, 5, TimeUnit.SECONDS);
-        assertThat(received.toString(), is("The sent value"));
+        assertThat(resp.body(), is("The sent value"));
         assertThat(resp.statusCode(), is(200));
 
         assertThat(chunkBeforeSentToTarget.toString(UTF_8), is("The sent value"));
