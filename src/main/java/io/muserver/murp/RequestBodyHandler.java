@@ -105,6 +105,7 @@ final class RequestBodyHandler {
 
         @Override
         public void onError(Throwable throwable) {
+            log.error("Error on reading request body from client", throwable);
             if (drainClientBody.get()) {
                 Consumer<Throwable> onError = drainErrorHandler.getAndSet(null);
                 if (onError != null) {
@@ -164,7 +165,6 @@ final class RequestBodyHandler {
 
                         @Override
                         public void cancel() {
-                            log.info("cancel request body pumping");
                         }
                     });
                 } catch (Throwable throwable) {

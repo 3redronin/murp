@@ -2,7 +2,6 @@ package io.muserver.murp;
 
 import io.muserver.MuServer;
 import org.junit.After;
-import org.junit.Ignore;
 import org.junit.Test;
 import scaffolding.MuAssert;
 import scaffolding.RawClient;
@@ -23,11 +22,12 @@ import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -37,11 +37,9 @@ import static io.muserver.murp.ReverseProxyBuilder.reverseProxy;
 import static java.nio.charset.StandardCharsets.ISO_8859_1;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.greaterThan;
-import static org.hamcrest.Matchers.instanceOf;
-import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.*;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 
 public class TargetFailureProxyTest {
 
@@ -260,6 +258,369 @@ public class TargetFailureProxyTest {
         );
 
         assertThat(exception.getMessage(), containsString("chunked transfer encoding"));
+    }
+/*
+    @Test
+    public void targetReturns204BeforeReadingFullUploadAndThenDisconnectsShouldFailRequest() throws Exception {
+
+        var closeCalledLatch = new CountDownLatch(1);
+        targetServer = startTarget((socket, input, output) -> {
+            readRequestHead(input);
+            readExactly(input, 5);
+            writeAscii(output,
+                "HTTP/1.1 204 No Content\r\n" +
+                    "Content-Length: 0\r\n" +
+                    "Connection: close\r\n" +
+                    "\r\n");
+            socket.close();
+            closeCalledLatch.countDown();
+        });
+        startReverseProxy();
+
+        try (RawClient rawClient = RawClient.create(reverseProxyServer.uri())
+            .sendStartLine("POST", "/upload")
+            .sendHeader("Host", reverseProxyServer.uri().getAuthority())
+            .sendHeader("Content-Type", "application/octet-stream")
+            .sendHeader("Content-Length", "1000000")
+            .endHeaders()
+            .sendUTF8("abcde")
+            .flushRequest()) {
+            assertTrue(closeCalledLatch.await(10, TimeUnit.SECONDS));
+
+            byte[] payload = new byte[32 * 1024];
+            assertThrows(IOException.class, () -> {
+                for (int i = 0; i < 1024; i++) {
+                    rawClient.send(payload).flushRequest();
+                }
+            });
+        }
+
+    }*/
+
+    @Test
+    public void targetClosesImmediatelyAfterAcceptBeforeReadingHeadersReturns502() throws Exception {
+        targetServer = startTarget((socket, input, output) -> socket.close());
+        startReverseProxy();
+
+        HttpResponse<String> response = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/immediate-close"))
+            .GET()
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode(), is(502));
+        assertThat(response.body(), containsString("502 Bad Gateway"));
+    }
+
+    @Test
+    public void targetConnectionResetBeforeResponseReturns502() throws Exception {
+        targetServer = startTarget((socket, input, output) -> {
+            readRequestHead(input);
+            socket.setSoLinger(true, 0);
+            socket.close();
+        });
+        startReverseProxy();
+
+        HttpResponse<String> response = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/reset-before-response"))
+            .GET()
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode(), is(502));
+        assertThat(response.body(), containsString("502 Bad Gateway"));
+    }
+
+    @Test
+    public void targetMalformedResponseBytesBeforeHeadersReturns502() throws Exception {
+        targetServer = startTarget((socket, input, output) -> {
+            readRequestHead(input);
+            writeAscii(output, "NOT HTTP\r\n\r\n");
+            socket.close();
+        });
+        startReverseProxy();
+
+        HttpResponse<String> response = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/malformed-response"))
+            .GET()
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode(), is(502));
+        assertThat(response.body(), containsString("502 Bad Gateway"));
+    }
+
+    @Test
+    public void targetClosesDuringIncompleteResponseHeadersReturns502() throws Exception {
+        targetServer = startTarget((socket, input, output) -> {
+            readRequestHead(input);
+            writeAscii(output, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n");
+            socket.close();
+        });
+        startReverseProxy();
+
+        HttpResponse<String> response = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/incomplete-headers-close"))
+            .GET()
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode(), is(502));
+        assertThat(response.body(), containsString("502 Bad Gateway"));
+    }
+
+    @Test
+    public void targetStallsDuringIncompleteResponseHeadersReturns504() throws Exception {
+        targetServer = startTarget((socket, input, output) -> {
+            readRequestHead(input);
+            writeAscii(output, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n");
+            sleep(300);
+        });
+        startReverseProxy(50);
+
+        HttpResponse<String> response = client.send(HttpRequest.newBuilder()
+            .uri(reverseProxyServer.uri().resolve("/incomplete-headers-stall"))
+            .GET()
+            .build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode(), is(504));
+        assertThat(response.body(), containsString("504 Gateway Timeout"));
+    }
+
+    @Test
+    public void targetClosesDuringFixedLengthResponseBodyDoesNotSynthesize502() throws Exception {
+        targetServer = startTarget((socket, input, output) -> {
+            readRequestHead(input);
+            writeAscii(output,
+                "HTTP/1.1 200 OK\r\n" +
+                    "Content-Length: 10\r\n" +
+                    "Connection: close\r\n" +
+                    "\r\n" +
+                    "hello");
+            socket.close();
+        });
+        startReverseProxy();
+
+        try (Socket clientSocket = new Socket(reverseProxyServer.uri().getHost(), reverseProxyServer.uri().getPort())) {
+            clientSocket.setSoTimeout(3_000);
+            OutputStream output = clientSocket.getOutputStream();
+            InputStream input = clientSocket.getInputStream();
+
+            writeAscii(output,
+                "GET /fixed-length-close HTTP/1.1\r\n" +
+                    "Host: " + reverseProxyServer.uri().getAuthority() + "\r\n" +
+                    "Connection: close\r\n" +
+                    "\r\n");
+
+            ResponseHead responseHead = readResponseHead(input);
+            assertThat(responseHead.statusCode, is(200));
+            assertThat(new String(readExactly(input, 5), UTF_8), is("hello"));
+            assertThrows(EOFException.class, () -> readExactly(input, 5));
+        }
+    }
+
+    @Test
+    public void targetStallsDuringFixedLengthResponseBodyDoesNotSynthesize504() throws Exception {
+        targetServer = startTarget((socket, input, output) -> {
+            readRequestHead(input);
+            writeAscii(output,
+                "HTTP/1.1 200 OK\r\n" +
+                    "Content-Length: 10\r\n" +
+                    "\r\n" +
+                    "hello");
+            sleep(300);
+        });
+        startReverseProxy(50);
+
+        try (Socket clientSocket = new Socket(reverseProxyServer.uri().getHost(), reverseProxyServer.uri().getPort())) {
+            clientSocket.setSoTimeout(3_000);
+            OutputStream output = clientSocket.getOutputStream();
+            InputStream input = clientSocket.getInputStream();
+
+            writeAscii(output,
+                "GET /fixed-length-stall HTTP/1.1\r\n" +
+                    "Host: " + reverseProxyServer.uri().getAuthority() + "\r\n" +
+                    "Connection: close\r\n" +
+                    "\r\n");
+
+            ResponseHead responseHead = readResponseHead(input);
+            assertThat(responseHead.statusCode, is(200));
+            assertThat(new String(readExactly(input, 5), UTF_8), is("hello"));
+            assertThrows(EOFException.class, () -> readExactly(input, 5));
+        }
+    }
+
+    @Test
+    public void completeFixedLengthUploadWithPreResponseFailureReturns502AndClientConnectionCanBeReused() throws Exception {
+        AtomicInteger targetRequestCount = new AtomicInteger();
+        targetServer = startTarget((socket, input, output) -> {
+            int requestNumber = targetRequestCount.incrementAndGet();
+            RequestHead requestHead = readRequestHead(input);
+            if (requestNumber == 1) {
+                assertThat(requestHead.method, is("POST"));
+                readExactly(input, requestHead.contentLength);
+                socket.close();
+                return;
+            }
+
+            assertThat(requestHead.method, is("GET"));
+            writeAscii(output,
+                "HTTP/1.1 200 OK\r\n" +
+                    "Content-Length: 2\r\n" +
+                    "Connection: keep-alive\r\n" +
+                    "\r\n" +
+                    "ok");
+        });
+        startReverseProxy();
+
+        try (Socket clientSocket = new Socket(reverseProxyServer.uri().getHost(), reverseProxyServer.uri().getPort())) {
+            clientSocket.setSoTimeout(3_000);
+            OutputStream output = clientSocket.getOutputStream();
+            InputStream input = clientSocket.getInputStream();
+
+            writeAscii(output,
+                "POST /upload HTTP/1.1\r\n" +
+                    "Host: " + reverseProxyServer.uri().getAuthority() + "\r\n" +
+                    "Content-Length: 11\r\n" +
+                    "Connection: keep-alive\r\n" +
+                    "\r\n" +
+                    "hello world");
+
+            ResponseHead firstResponse = readResponseHead(input);
+            assertThat(firstResponse.statusCode, is(502));
+            assertThat(readResponseBody(input, firstResponse), containsString("502 Bad Gateway"));
+
+            writeAscii(output,
+                "GET /after-error HTTP/1.1\r\n" +
+                    "Host: " + reverseProxyServer.uri().getAuthority() + "\r\n" +
+                    "Connection: close\r\n" +
+                    "\r\n");
+
+            ResponseHead secondResponse = readResponseHead(input);
+            assertThat(secondResponse.statusCode, is(200));
+            assertThat(readResponseBody(input, secondResponse), is("ok"));
+            assertThat(targetRequestCount.get(), is(2));
+        }
+    }
+
+    @Test
+    public void incompleteFixedLengthUploadWithPreResponseFailureDoesNotTreatRemainingBytesAsNewRequest() throws Exception {
+        AtomicInteger targetRequestCount = new AtomicInteger();
+        targetServer = startTarget((socket, input, output) -> {
+            targetRequestCount.incrementAndGet();
+            readRequestHead(input);
+            readExactly(input, 5);
+            socket.setSoLinger(true, 0);
+            socket.close();
+        });
+        startReverseProxy();
+
+        try (Socket clientSocket = new Socket(reverseProxyServer.uri().getHost(), reverseProxyServer.uri().getPort())) {
+            clientSocket.setSoTimeout(3_000);
+            OutputStream output = clientSocket.getOutputStream();
+            InputStream input = clientSocket.getInputStream();
+
+            writeAscii(output,
+                "POST /upload HTTP/1.1\r\n" +
+                    "Host: " + reverseProxyServer.uri().getAuthority() + "\r\n" +
+                    "Content-Length: 1000000\r\n" +
+                    "Connection: keep-alive\r\n" +
+                    "\r\n" +
+                    "hello");
+
+            ResponseHead firstResponse = readResponseHead(input);
+            assertThat(firstResponse.statusCode, is(502));
+            assertThat(readResponseBody(input, firstResponse), containsString("502 Bad Gateway"));
+
+            writeAscii(output,
+                "GET /must-not-be-reused HTTP/1.1\r\n" +
+                    "Host: " + reverseProxyServer.uri().getAuthority() + "\r\n" +
+                    "Connection: close\r\n" +
+                    "\r\n");
+
+            clientSocket.setSoTimeout(200);
+            assertThrows(SocketTimeoutException.class, () -> readResponseHead(input));
+            assertThat(targetRequestCount.get(), is(1));
+        }
+    }
+
+    @Test
+    public void clientAbortDuringRequestUploadClosesTargetSideWithoutLeakingActiveRequests() throws Exception {
+        CountDownLatch targetSawAbort = new CountDownLatch(1);
+        CountDownLatch partialReadConsumed = new CountDownLatch(1);
+        targetServer = startTarget((socket, input, output) -> {
+            readRequestHead(input);
+            try {
+                int c;
+                while ((c = input.read()) != -1) {
+                    // consume until the proxy closes/cancels the upstream request body
+                    if (c == '*') {
+                        partialReadConsumed.countDown();
+                    }
+                }
+            } catch (IOException ignored) {
+                // reset/closed sockets are both acceptable abort signals here
+            } finally {
+                targetSawAbort.countDown();
+            }
+        });
+        startReverseProxy();
+
+        try (Socket clientSocket = new Socket(reverseProxyServer.uri().getHost(), reverseProxyServer.uri().getPort())) {
+            clientSocket.setSoTimeout(3_000);
+            OutputStream output = clientSocket.getOutputStream();
+            writeAscii(output,
+                "POST /client-abort-upload HTTP/1.1\r\n" +
+                    "Host: " + reverseProxyServer.uri().getAuthority() + "\r\n" +
+                    "Content-Length: 1000000\r\n" +
+                    "Connection: close\r\n" +
+                    "\r\n" +
+                    "partial-body*");
+            assertTrue(partialReadConsumed.await(5, TimeUnit.SECONDS));
+            clientSocket.setSoLinger(true, 0);
+        }
+
+        assertThat(targetSawAbort.await(3, TimeUnit.SECONDS), is(true));
+    }
+
+    @Test
+    public void clientAbortWhileReadingTargetResponseCancelsUpstream() throws Exception {
+        CountDownLatch targetWriteFailed = new CountDownLatch(1);
+        AtomicBoolean targetFinished = new AtomicBoolean(false);
+        targetServer = startTarget((socket, input, output) -> {
+            readRequestHead(input);
+            writeAscii(output,
+                "HTTP/1.1 200 OK\r\n" +
+                    "Transfer-Encoding: chunked\r\n" +
+                    "\r\n");
+            byte[] chunk = new byte[8192];
+            try {
+                for (int i = 0; i < 10_000; i++) {
+                    writeAscii(output, Integer.toHexString(chunk.length) + "\r\n");
+                    output.write(chunk);
+                    writeAscii(output, "\r\n");
+                }
+            } catch (IOException ignored) {
+                targetWriteFailed.countDown();
+            } finally {
+                targetFinished.set(true);
+            }
+        });
+        startReverseProxy();
+
+        try (Socket clientSocket = new Socket(reverseProxyServer.uri().getHost(), reverseProxyServer.uri().getPort())) {
+            clientSocket.setSoTimeout(3_000);
+            OutputStream output = clientSocket.getOutputStream();
+            InputStream input = clientSocket.getInputStream();
+            writeAscii(output,
+                "GET /large-response HTTP/1.1\r\n" +
+                    "Host: " + reverseProxyServer.uri().getAuthority() + "\r\n" +
+                    "Connection: close\r\n" +
+                    "\r\n");
+            ResponseHead responseHead = readResponseHead(input);
+            assertThat(responseHead.statusCode, is(200));
+            readChunk(input);
+            clientSocket.setSoLinger(true, 0);
+        }
+
+        assertThat(targetWriteFailed.await(3, TimeUnit.SECONDS), is(true));
+        assertThat(targetFinished.get(), is(true));
     }
 
     private void startReverseProxy() {
@@ -526,14 +887,6 @@ public class TargetFailureProxyTest {
         if (carriageReturn != '\r' || lineFeed != '\n') {
             throw new IOException("Expected CRLF but got " + carriageReturn + ", " + lineFeed);
         }
-    }
-
-    private static Throwable rootCause(Throwable throwable) {
-        Throwable current = throwable;
-        while (current.getCause() != null) {
-            current = current.getCause();
-        }
-        return current;
     }
 
     private static void sleep(long millis) {
