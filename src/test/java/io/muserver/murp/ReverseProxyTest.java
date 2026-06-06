@@ -9,7 +9,6 @@ import okhttp3.Response;
 import okhttp3.sse.EventSource;
 import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
-import org.junit.Assume;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,7 +42,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
-import static io.muserver.Http2ConfigBuilder.http2EnabledIfAvailable;
+import static io.muserver.Http2ConfigBuilder.http2Config;
 import static io.muserver.MuServerBuilder.httpServer;
 import static io.muserver.MuServerBuilder.httpsServer;
 import static io.muserver.murp.ReverseProxyBuilder.createHttpClientBuilder;
@@ -134,12 +133,12 @@ public class ReverseProxyTest {
     @Test
     public void gzipGetsProxiedAsGzip() throws Exception {
         MuServer targetServer = httpServer()
-            .withHttp2Config(http2EnabledIfAvailable())
+            .withHttp2Config(http2Config().enabled(true))
             .addHandler(ResourceHandlerBuilder.fileHandler("."))
             .start();
 
         MuServer reverseProxyServer = httpsServer()
-            .withHttp2Config(http2EnabledIfAvailable())
+            .withHttp2Config(http2Config().enabled(true))
             .addHandler(reverseProxy().withUriMapper(UriMapper.toDomain(targetServer.uri())))
             .start();
 
@@ -813,7 +812,7 @@ public class ReverseProxyTest {
     @Test
     public void http1ClientToHttp2ServerWorks() throws Exception {
         MuServer targetServer = httpsServer()
-            .withHttp2Config(http2EnabledIfAvailable())
+            .withHttp2Config(http2Config().enabled(true))
             .addHandler(Method.GET, "/", (req, resp, pp) -> {
                 String forwarded = req.headers().forwarded().stream().map(f -> f.proto() + " with host " + f.host()).collect(Collectors.joining(", "));
                 resp.write("The Via header is "
@@ -822,7 +821,7 @@ public class ReverseProxyTest {
             .start();
 
         MuServer proxy = httpsServer()
-            .withHttp2Config(http2EnabledIfAvailable())
+            .withHttp2Config(http2Config().enabled(true))
             .addHandler(reverseProxy()
                 .withViaName("proxy")
                 .withUriMapper(UriMapper.toDomain(targetServer.uri()))
@@ -842,7 +841,6 @@ public class ReverseProxyTest {
 
     @Test
     public void http2ToHttp1ToTargetWorks() throws Exception {
-        runIfJava9OrLater();
         MuServer targetServer = httpServer()
             .addHandler(Method.GET, "/", (req, resp, pp) -> {
                 String forwarded = req.headers().forwarded().stream().map(f -> f.proto() + " with host " + f.host()).collect(Collectors.joining(", "));
@@ -859,7 +857,7 @@ public class ReverseProxyTest {
             .start();
 
         MuServer externalRP = httpsServer()
-            .withHttp2Config(http2EnabledIfAvailable())
+            .withHttp2Config(http2Config().enabled(true))
             .addHandler(reverseProxy()
                 .withViaName("externalrp")
                 .withUriMapper(UriMapper.toDomain(internalRP.uri()))
@@ -881,10 +879,9 @@ public class ReverseProxyTest {
 
     @Test
     public void http1ToHttp2ToHttp2TargetWorks() throws Exception {
-        runIfJava9OrLater();
 
         MuServer targetServer = httpServer()
-            .withHttp2Config(http2EnabledIfAvailable())
+            .withHttp2Config(http2Config().enabled(true))
             .addHandler(Method.GET, "/", (req, resp, pp) -> {
                 String forwarded = req.headers().forwarded().stream().map(f -> f.proto() + " with host " + f.host()).collect(Collectors.joining(", "));
                 resp.write("The Via header is "
@@ -978,10 +975,6 @@ public class ReverseProxyTest {
             assertThat(resp.headers("set-cookie").get(0), equalTo("cooke_a=a"));
             assertThat(resp.headers("set-cookie").get(1), equalTo("cooke_b=b"));
         }
-    }
-
-    private void runIfJava9OrLater() {
-        Assume.assumeThat("This test runs only on java 9 an later", System.getProperty("java.specification.version"), not(equalTo("1.8")));
     }
 
     @Test
