@@ -29,7 +29,6 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TargetFailureProxyTest {
 
@@ -535,24 +534,17 @@ public class TargetFailureProxyTest {
         CountDownLatch targetSawAbort = new CountDownLatch(1);
         CountDownLatch partialReadConsumed = new CountDownLatch(1);
         targetServer = startTarget((socket, input, output) -> {
-            var req = readRequestHead(input);
-            System.out.println("req = " + req);
+            readRequestHead(input);
             try {
                 int c;
                 while ((c = input.read()) != -1) {
-                    System.out.println("c = " + c + " - " + (char)c);
                     // consume until the proxy closes/cancels the upstream request body
                     if (c == '*') {
                         partialReadConsumed.countDown();
                     }
                 }
-                System.out.println("Finished reading");
             } catch (IOException ignored) {
                 // reset/closed sockets are both acceptable abort signals here
-                System.out.println("IOException got");
-            } catch (Exception e) {
-                System.out.println("Exception!");
-                e.printStackTrace();
             } finally {
                 targetSawAbort.countDown();
             }
@@ -569,11 +561,11 @@ public class TargetFailureProxyTest {
                     "Connection: close\r\n" +
                     "\r\n" +
                     "partial-body*");
-            assertTrue(partialReadConsumed.await(5, TimeUnit.SECONDS));
+            MuAssert.assertNotTimedOut("Target should consume the first request-body chunk", partialReadConsumed);
             clientSocket.setSoLinger(true, 0);
         }
 
-        assertThat(targetSawAbort.await(5, TimeUnit.SECONDS), is(true));
+        MuAssert.assertNotTimedOut("Target side should observe request abort and complete", targetSawAbort);
     }
 
     @Test
