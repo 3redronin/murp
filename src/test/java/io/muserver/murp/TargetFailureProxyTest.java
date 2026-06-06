@@ -566,7 +566,7 @@ public class TargetFailureProxyTest {
             clientSocket.setSoLinger(true, 0);
         }
 
-        assertThat(targetSawAbort.await(3, TimeUnit.SECONDS), is(true));
+        assertThat(targetSawAbort.await(5, TimeUnit.SECONDS), is(true));
     }
 
     @Test

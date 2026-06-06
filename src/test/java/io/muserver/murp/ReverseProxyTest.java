@@ -381,7 +381,7 @@ public class ReverseProxyTest {
             .uri(reverseProxyServer.uri().resolve("/"))
             .build(), HttpResponse.BodyHandlers.ofString());
 
-        assertThat(resp.headers().firstValue("Via").get(), containsString("HTTP/1.1 blardorph"));
+        assertThat(resp.headers().firstValue("Via").orElse("null"), containsString("HTTP/1.1 blardorph"));
         String body = resp.body();
         assertThat(body, startsWith("The host header is " + reverseProxyServer.uri().getAuthority() +
             " and the Via header is [HTTP/1.1 blardorph] and forwarded is by="));
@@ -428,7 +428,7 @@ public class ReverseProxyTest {
     }
 
     @Test
-    public void completeCallbackInvokedInRightSequence() throws InterruptedException {
+    public void completeCallbackInvokedInRightSequence() throws Exception {
 
         CountDownLatch latch = new CountDownLatch(2);
         AtomicInteger callSequence = new AtomicInteger(0);
@@ -461,7 +461,7 @@ public class ReverseProxyTest {
             )
             .start();
 
-        CompletableFuture<HttpResponse<String>> responseFuture = client.sendAsync(HttpRequest.newBuilder()
+        client.send(HttpRequest.newBuilder()
             .uri(reverseProxyServer.uri().resolve("/hello"))
             .build(), HttpResponse.BodyHandlers.ofString());
 
@@ -1167,12 +1167,9 @@ public class ReverseProxyTest {
 
     @Test
     public void streamedRequestBodiesWork() throws Exception {
-        CountDownLatch latch = new CountDownLatch(1);
-        StringBuilder received = new StringBuilder();
         MuServer targetServer = httpServer()
             .addHandler(Method.POST, "/", (req, resp, pp) -> {
-                received.append(req.readBodyAsString());
-                latch.countDown();
+                resp.write(req.readBodyAsString());
             })
             .start();
 
@@ -1201,9 +1198,8 @@ public class ReverseProxyTest {
             .uri(rp.uri().resolve("/"))
             .build(), HttpResponse.BodyHandlers.ofString());
 
-        MuAssert.assertNotTimedOut("Waiting for completion", latch, 5, TimeUnit.SECONDS);
-        assertThat(received.toString(), is("The sent value"));
-        assertThat(resp.statusCode(), is(200));
+        assertThat(resp.body(), resp.statusCode(), is(200));
+        assertThat(resp.body(), is("The sent value"));
     }
 
     @Test
@@ -1292,15 +1288,6 @@ public class ReverseProxyTest {
         assertThat(onBeforeRequestBodyChunkSentToTargetBufferLengthCount.get(), equalTo(14));
         assertThat(onBeforeRequestBodyChunkSentToTargetBufferLengthCount.get(), equalTo(14));
         assertThat(totalRequestBodyBytes.get(), equalTo(14L));
-    }
-
-
-    private String largeRandomString() {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < 1000; i++) {
-            sb.append(UUID.randomUUID()).append(" ");
-        }
-        return sb.toString();
     }
 
 }
