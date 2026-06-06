@@ -1,8 +1,8 @@
 package io.muserver.murp;
 
 import io.muserver.MuServer;
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 import scaffolding.MuAssert;
 import scaffolding.RawClient;
 
@@ -38,8 +38,8 @@ import static java.nio.charset.StandardCharsets.ISO_8859_1;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
-import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TargetFailureProxyTest {
 
@@ -49,7 +49,7 @@ public class TargetFailureProxyTest {
     private MuServer reverseProxyServer;
     private boolean skipActiveRequestCheckOnStop;
 
-    @After
+    @AfterEach
     public void stopServers() {
         closeQuietly(targetServer);
         targetServer = null;

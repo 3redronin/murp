@@ -1,27 +1,16 @@
 package io.muserver.murp;
 
 import io.muserver.MuServer;
-import okhttp3.Connection;
-import okhttp3.EventListener;
-import okhttp3.MediaType;
-import okhttp3.OkHttpClient;
-import okhttp3.RequestBody;
-import okhttp3.Response;
+import okhttp3.*;
 import okio.BufferedSink;
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 import scaffolding.MuAssert;
 
-import java.io.ByteArrayOutputStream;
-import java.io.Closeable;
-import java.io.EOFException;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URI;
-import java.util.LinkedHashMap;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -35,8 +24,9 @@ import static io.muserver.murp.ReverseProxyBuilder.reverseProxy;
 import static java.nio.charset.StandardCharsets.ISO_8859_1;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.*;
-import static org.junit.Assert.assertThrows;
+import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static scaffolding.ClientUtils.request;
 
 public class TargetFailureHttp2ProxyTest {
@@ -44,7 +34,7 @@ public class TargetFailureHttp2ProxyTest {
     private ManualTargetServer targetServer;
     private MuServer reverseProxyServer;
 
-    @After
+    @AfterEach
     public void stopServers() {
         closeQuietly(targetServer);
         targetServer = null;
@@ -416,14 +406,6 @@ public class TargetFailureHttp2ProxyTest {
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
-    }
-
-    private static Throwable rootCause(Throwable throwable) {
-        Throwable current = throwable;
-        while (current.getCause() != null) {
-            current = current.getCause();
-        }
-        return current;
     }
 
     private static RequestBody bodyOf(String value) {

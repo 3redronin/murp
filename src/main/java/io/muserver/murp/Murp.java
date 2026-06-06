@@ -25,10 +25,8 @@ public class Murp {
             if (in == null) {
                 v = "0.x";
             } else {
-                try {
+                try (in) {
                     props.load(in);
-                } finally {
-                    in.close();
                 }
                 v = props.getProperty("version");
             }

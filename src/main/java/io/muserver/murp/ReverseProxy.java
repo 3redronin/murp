@@ -9,6 +9,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -178,6 +179,7 @@ public class ReverseProxy implements MuHandler {
                 clientResponse.status(responseInfo.statusCode());
 
                 // set response headers
+                boolean clientIsH2 = "HTTP/2.0".equals(clientRequestProtocol);
                 for (Map.Entry<String, List<String>> headerEntry : responseInfo.headers().map().entrySet()) {
                     for (String value : headerEntry.getValue()) {
                         String header = headerEntry.getKey();
@@ -185,7 +187,7 @@ public class ReverseProxy implements MuHandler {
                         if (HOP_BY_HOP_HEADERS.contains(lowerName)) {
                             continue;
                         }
-                        if (!"HTTP/2.0".equals(clientRequestProtocol) && HTTP_2_PSEUDO_HEADERS.contains(lowerName)) {
+                        if (!clientIsH2 && HTTP_2_PSEUDO_HEADERS.contains(lowerName)) {
                             continue;
                         }
                         clientResponse.headers().add(header, value);
@@ -306,36 +308,38 @@ public class ReverseProxy implements MuHandler {
         targetResponseFutureRef.set(httpClient.sendAsync(targetRequest, bh));
 
         targetResponseFutureRef.get()
-            .orTimeout(totalTimeoutInMillis, TimeUnit.MILLISECONDS)
+            .orTimeout(totalTimeoutInMillis, TimeUnit.MILLISECONDS) // note: this is set here rather than on the http request builder timeout because that timeout excludes body streaming time
             .whenComplete((httpResponse, throwable) -> {
+                var error = throwable instanceof CompletionException ? throwable.getCause() : throwable;
 
                 if (clientResponse.responseState().endState()) {
                     return;
                 }
 
-                if (throwable == null) {
+                if (error == null) {
                     asyncHandle.complete();
                     return;
                 }
 
                 log.info("closing client request as target server error detected. " +
-                    "client_request=[{}], target_request=[{}], error={}", clientRequest, targetRequestRef.get(), throwable.getMessage());
+                    "client_request=[{}], target_request=[{}], error={}", clientRequest, targetRequestRef.get(), error.getMessage());
 
                 if (proxyListener != null) {
                     try {
-                        proxyListener.onErrorDetectedFromTarget(clientRequest, clientResponse, targetRequestRef.get(), throwable);
-                    } catch (Exception error) {
-                        log.warn("proxyListener.onErrorDetectedFromTarget failed", error);
+                        proxyListener.onErrorDetectedFromTarget(clientRequest, clientResponse, targetRequestRef.get(), error);
+                    } catch (Exception e) {
+                        log.warn("proxyListener.onErrorDetectedFromTarget failed", e);
                     }
                 }
 
                 if (clientResponse.hasStartedSendingData()) {
-                    asyncHandle.complete(throwable);
+                    asyncHandle.complete(error);
                     return;
                 }
 
-                final int status = (throwable instanceof TimeoutException) ? 504 : 502;
-                final String body = (throwable instanceof TimeoutException) ? "504 Gateway Timeout" : "502 Bad Gateway";
+                final boolean isTimeout = error instanceof HttpTimeoutException || error instanceof TimeoutException;
+                final int status = isTimeout ? 504 : 502;
+                final String body = isTimeout ? "504 Gateway Timeout" : "502 Bad Gateway";
                 final byte[] responseBodyBytes = body.getBytes(StandardCharsets.UTF_8);
                 clientResponse.status(status);
                 clientResponse.headers().set(HeaderNames.CONTENT_LENGTH, Integer.toString(responseBodyBytes.length));
@@ -358,15 +362,13 @@ public class ReverseProxy implements MuHandler {
         return true;
     }
 
-    private static boolean setTargetRequestHeaders(MuRequest clientRequest, HttpRequest.Builder targetRequest, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders, String viaValue, Set<String> excludedHeaders) {
+    private static void setTargetRequestHeaders(MuRequest clientRequest, HttpRequest.Builder targetRequest, boolean discardClientForwardedHeaders, boolean sendLegacyForwardedHeaders, String viaValue, Set<String> excludedHeaders) {
         Headers reqHeaders = clientRequest.headers();
         List<String> customHopByHop = getCustomHopByHopHeaders(reqHeaders.get(HeaderNames.CONNECTION));
 
-        boolean hasContentLengthOrTransferEncoding = false;
         for (Map.Entry<String, String> clientHeader : reqHeaders) {
             String key = clientHeader.getKey();
             String lowKey = key.toLowerCase();
-            hasContentLengthOrTransferEncoding |= lowKey.equals("content-length") || lowKey.equals("transfer-encoding");
             if (excludedHeaders.contains(lowKey) || customHopByHop.contains(lowKey) || HttpClientUtils.DISALLOWED_REQUEST_HEADERS.contains(lowKey)) {
                 continue;
             }
@@ -378,7 +380,6 @@ public class ReverseProxy implements MuHandler {
 
         setForwardedHeaders(clientRequest, targetRequest, discardClientForwardedHeaders, sendLegacyForwardedHeaders);
 
-        return hasContentLengthOrTransferEncoding;
     }
 
     private static String getNewViaValue(String viaValue, List<String> previousViasList) {
@@ -463,19 +464,6 @@ public class ReverseProxy implements MuHandler {
             customHopByHop.add(s.toLowerCase());
         }
         return customHopByHop;
-    }
-
-    @FunctionalInterface
-    private interface ThrowableRunnable {
-        void run() throws Throwable;
-    }
-
-    private static void logError(ThrowableRunnable runnable) {
-        try {
-            runnable.run();
-        } catch (Throwable e) {
-            log.error("logError", e);
-        }
     }
 
 }

@@ -9,7 +9,7 @@ import okhttp3.Response;
 import okhttp3.sse.EventSource;
 import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scaffolding.ClientUtils;
@@ -51,8 +51,8 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
-import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static scaffolding.ClientUtils.call;
 import static scaffolding.ClientUtils.request;
 import static scaffolding.MuAssert.assertEventually;
@@ -340,16 +340,6 @@ public class ReverseProxyTest {
         }
     }
 
-    private ByteBuffer cloneByteBuffer(ByteBuffer byteBuffer) {
-        // bug fix : upload file random broken - (some of the bytes disordered)
-        // clone the byteBuffer to avoid it's being modified after passing into subscriber.onNext()
-        int capacity = byteBuffer.remaining();
-        ByteBuffer copy = byteBuffer.isDirect() ? ByteBuffer.allocateDirect(capacity) : ByteBuffer.allocate(capacity);
-        copy.put(byteBuffer);
-        copy.rewind();
-        return copy;
-    }
-
     @FunctionalInterface
     private interface ThrowingRunnable {
         void run() throws Exception;
@@ -364,7 +354,7 @@ public class ReverseProxyTest {
     }
 
     @Test
-    public void completeCallbackInvokedInRightSequence() throws IOException, InterruptedException {
+    public void completeCallbackInvokedInRightSequence() throws InterruptedException {
 
         CountDownLatch latch = new CountDownLatch(2);
         AtomicInteger callSequence = new AtomicInteger(0);
@@ -407,7 +397,7 @@ public class ReverseProxyTest {
     }
 
     @Test
-    public void completeCallbackInvokedInRightSequence_responseBodyEmptyCase() throws IOException, InterruptedException, ExecutionException {
+    public void completeCallbackInvokedInRightSequence_responseBodyEmptyCase() throws InterruptedException, ExecutionException {
 
         CountDownLatch latch = new CountDownLatch(2);
         AtomicInteger callSequence = new AtomicInteger(0);
@@ -589,7 +579,7 @@ public class ReverseProxyTest {
         // wait for the request to be sent
         Thread.sleep(500);
 
-        assertThrows("pretending to be early drop", Exception.class, responseFuture::get);
+        assertThrows(Throwable.class, responseFuture::get, "pretending to be early drop");
 
         assertTrue(sendingLatch.await(3, TimeUnit.SECONDS));
         assertTrue(latch.await(3, TimeUnit.SECONDS));
@@ -648,13 +638,13 @@ public class ReverseProxyTest {
             .uri(reverseProxyServer.uri().resolve("/"))
             .build();
 
-        IOException ioException = assertThrows("", IOException.class, () -> {
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        IOException ioException = assertThrows(IOException.class, () -> {
+            client.send(request, HttpResponse.BodyHandlers.ofString());
         });
 
         assertThat(completeCalled.get(), is(true));
         assertThat(ioException.getMessage(), is("chunked transfer encoding, state: READING_LENGTH"));
-        assertThat(targetError.get(), instanceOf(RuntimeException.class));
+        assertThat(targetError.get(), instanceOf(IOException.class));
         assertThat(targetError.get().getMessage(), containsString("chunked transfer encoding, state: READING_LENGTH"));
 
     }

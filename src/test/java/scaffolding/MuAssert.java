@@ -2,7 +2,7 @@ package scaffolding;
 
 import io.muserver.MuServer;
 import org.hamcrest.Matcher;
-import org.junit.Assert;
+import org.junit.jupiter.api.Assertions;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -66,11 +66,11 @@ public class MuAssert {
         try {
             assertThat(actual.apply(), matcher);
         } catch (Exception e) {
-            Assert.fail("Lambda threw exception: " + e);
+            Assertions.fail("Lambda threw exception: " + e);
         }
     }
 
     public interface Func<V> {
-        public V apply() throws Exception;
+        V apply() throws Exception;
     }
 }

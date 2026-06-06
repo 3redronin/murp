@@ -1,11 +1,12 @@
 package io.muserver.murp;
 
-import javax.net.ssl.*;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509ExtendedTrustManager;
 import java.net.Socket;
-import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.nio.charset.StandardCharsets;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.X509Certificate;
@@ -38,10 +39,6 @@ class HttpClientUtils {
         }
         disallowed.add("content-length"); // as the body publisher adds it
         DISALLOWED_REQUEST_HEADERS = Collections.unmodifiableList(disallowed);
-    }
-
-    static String urlEncode(String value) {
-        return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
     }
 
     static HttpClient.Builder createHttpClientBuilder(boolean trustAll) {

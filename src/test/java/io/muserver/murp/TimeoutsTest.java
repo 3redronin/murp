@@ -2,8 +2,8 @@ package io.muserver.murp;
 
 import io.muserver.Method;
 import io.muserver.MuServer;
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.http.HttpRequest;
@@ -15,7 +15,7 @@ import static io.muserver.murp.ReverseProxyBuilder.createHttpClientBuilder;
 import static io.muserver.murp.ReverseProxyBuilder.reverseProxy;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
-import static org.junit.Assert.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class TimeoutsTest {
 
@@ -25,7 +25,7 @@ public class TimeoutsTest {
     private MuServer reverseProxyServer;
 
     @Test
-    public void totalTimeoutCauses504() throws Exception {
+    public void totalTimeoutCauses504IfTimeoutBeforeResponseCommitted() throws Exception {
         targetServer = httpServer()
                 .addHandler(Method.GET, "/",
                         (request, response, pathParams) -> Thread.sleep(200))
@@ -47,7 +47,7 @@ public class TimeoutsTest {
     }
 
     @Test
-    public void idleTimeoutCausesDisconnection() throws Exception {
+    public void totalTimeoutBeingExceededResultsInIOErrorIfRequestAlreadyCommitted() throws Exception {
         targetServer = httpServer()
                 .addHandler(Method.GET, "/",
                         (request, response, pathParams) -> {
@@ -70,7 +70,7 @@ public class TimeoutsTest {
                 )
                 .start();
 
-        IOException ioException = assertThrows("", IOException.class, () -> {
+        IOException ioException = assertThrows(IOException.class, () -> {
             client.send(HttpRequest.newBuilder()
                 .uri(reverseProxyServer.uri())
                 .build(), HttpResponse.BodyHandlers.ofString());
@@ -78,7 +78,7 @@ public class TimeoutsTest {
         assertThat(ioException.getMessage(), is("chunked transfer encoding, state: READING_LENGTH"));
     }
 
-    @After
+    @AfterEach
     public void stopServers() {
         if (targetServer != null) {
             targetServer.stop();
