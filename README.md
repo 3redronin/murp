@@ -1,6 +1,8 @@
-[![Build Status](https://travis-ci.org/3redronin/murp.svg?branch=master)](https://travis-ci.org/3redronin/murp)
- ![GitHub](https://img.shields.io/github/license/3redronin/murp)
-# murp
+![GitHub](https://img.shields.io/github/license/3redronin/murp)
+[![Build and test](https://github.com/3redronin/murp/actions/workflows/ci.yaml/badge.svg)](https://github.com/3redronin/murp/actions/workflows/ci.yaml)
+
+murp
+----
 
 A reverse proxy handler for [Mu Server](https://muserver.io).
 

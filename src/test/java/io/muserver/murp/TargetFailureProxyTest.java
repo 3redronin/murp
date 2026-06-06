@@ -6,12 +6,7 @@ import org.junit.jupiter.api.Test;
 import scaffolding.MuAssert;
 import scaffolding.RawClient;
 
-import java.io.ByteArrayOutputStream;
-import java.io.Closeable;
-import java.io.EOFException;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
@@ -22,12 +17,7 @@ import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.concurrent.ConcurrentLinkedDeque;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Flow;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -582,7 +572,7 @@ public class TargetFailureProxyTest {
     @Test
     public void clientAbortWhileReadingTargetResponseCancelsUpstream() throws Exception {
         CountDownLatch targetWriteFailed = new CountDownLatch(1);
-        AtomicBoolean targetFinished = new AtomicBoolean(false);
+        CountDownLatch targetFinished = new CountDownLatch(1);
         targetServer = startTarget((socket, input, output) -> {
             readRequestHead(input);
             writeAscii(output,
@@ -599,7 +589,7 @@ public class TargetFailureProxyTest {
             } catch (IOException ignored) {
                 targetWriteFailed.countDown();
             } finally {
-                targetFinished.set(true);
+                targetFinished.countDown();
             }
         });
         startReverseProxy();
@@ -619,8 +609,8 @@ public class TargetFailureProxyTest {
             clientSocket.setSoLinger(true, 0);
         }
 
-        assertThat(targetWriteFailed.await(3, TimeUnit.SECONDS), is(true));
-        assertThat(targetFinished.get(), is(true));
+        assertThat(targetWriteFailed.await(5, TimeUnit.SECONDS), is(true));
+        assertThat(targetFinished.await(5, TimeUnit.SECONDS), is(true));
     }
 
     private void startReverseProxy() {
